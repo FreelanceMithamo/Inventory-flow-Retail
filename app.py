@@ -15,40 +15,47 @@ st.set_page_config(
 )
 
 # -------------------------------------------------
-# CSS
+# CSS + Background
 # -------------------------------------------------
 st.markdown("""
 <style>
     .stApp {
-        background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
+        background: linear-gradient(rgba(15, 23, 42, 0.75), rgba(15, 23, 42, 0.82)),
+                    url('https://images.unsplash.com/photo-1556911220-bff31c812dba?ixlib=rb-4.0.3&auto=format&fit=crop&w=1920&q=80');
+        background-size: cover;
+        background-position: center;
+        background-attachment: fixed;
     }
+    
     #MainMenu, footer, header {visibility: hidden;}
    
     .login-card {
-        background: white;
+        background: rgba(255, 255, 255, 0.95);
         border-radius: 20px;
         padding: 2.2rem 2.5rem;
-        box-shadow: 0 25px 50px -12px rgba(220, 38, 38, 0.18);
+        box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.35);
         border-top: 6px solid #dc2626;
         max-width: 440px;
         margin: 0 auto;
+        backdrop-filter: blur(8px);
     }
    
     .module-card {
-        background: white;
+        background: rgba(255, 255, 255, 0.94);
         border-radius: 18px;
         padding: 1.9rem 1.5rem;
-        box-shadow: 0 10px 15px -3px rgba(0,0,0,0.07);
-        border: 1px solid #e5e7eb;
+        box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.2);
+        border: 1px solid rgba(255,255,255,0.3);
         transition: all 0.28s ease;
         height: 100%;
         text-align: center;
+        backdrop-filter: blur(6px);
     }
     .module-card:hover {
         transform: translateY(-8px);
-        box-shadow: 0 25px 30px -5px rgba(220, 38, 38, 0.18);
+        box-shadow: 0 25px 35px -5px rgba(220, 38, 38, 0.25);
         border-color: #f87171;
-        background: #fff5f5;
+        background: rgba(255, 245, 245, 0.97);
     }
    
     .logo-circle {
@@ -77,9 +84,9 @@ st.markdown("""
         background: #b91c1c !important;
     }
    
-    label, .stTextInput label, .stMarkdown, .stMarkdown p,
-    .stMarkdown h1, .stMarkdown h2, .stMarkdown h3, .stMarkdown h4 {
+    label, .stTextInput label {
         color: #1f2937 !important;
+        font-weight: 600 !important;
     }
    
     .stTextInput > div > div > input {
@@ -87,10 +94,6 @@ st.markdown("""
         color: #111827 !important;
         border: 1.5px solid #d1d5db !important;
         border-radius: 8px !important;
-    }
-    .stTextInput > div > div > input:focus {
-        border-color: #dc2626 !important;
-        box-shadow: 0 0 0 3px rgba(220, 38, 38, 0.15) !important;
     }
    
     .user-badge {
@@ -101,6 +104,13 @@ st.markdown("""
         font-size: 0.8rem;
         font-weight: 600;
     }
+    
+    .footer-text {
+        text-align: center;
+        color: #9ca3af;
+        font-size: 0.9rem;
+        margin-top: 2.5rem;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -108,11 +118,15 @@ st.markdown("""
 # Auth State
 # -------------------------------------------------
 if "users" not in st.session_state:
-    st.session_state.users = {
-        "Administrator": "Jose2024",      # ← Your admin account
-        "demo": "demo123",
-        "manager": "branch123"
-    }
+    st.session_state.users = {}
+
+# Always ensure Administrator exists
+st.session_state.users["Administrator"] = "Jose2024"
+
+if "demo" not in st.session_state.users:
+    st.session_state.users["demo"] = "demo123"
+if "manager" not in st.session_state.users:
+    st.session_state.users["manager"] = "branch123"
 
 if "pending_resets" not in st.session_state:
     st.session_state.pending_resets = []
@@ -141,9 +155,9 @@ def login_page():
     with col2:
         st.markdown("""
         <div style="text-align:center; margin-bottom: 1.5rem;">
-            <div style="font-size: 3.5rem;">📦</div>
-            <h1 style="margin:0; font-size: 2.5rem; font-weight: 800; color: #dc2626;">StockFlow</h1>
-            <p style="color: #6b7280; font-size: 1.1rem;">Retail Inventory Intelligence Platform</p>
+            <div style="font-size: 3.5rem;">🏠📺🍳📦</div>
+            <h1 style="margin:0; font-size: 2.5rem; font-weight: 800; color: #ffffff;">StockFlow</h1>
+            <p style="color: #e5e7eb; font-size: 1.1rem;">Retail Inventory Intelligence Platform</p>
         </div>
         """, unsafe_allow_html=True)
        
@@ -202,6 +216,13 @@ def login_page():
                         st.session_state.pending_resets.append(forgot_user)
                         st.success("Request sent to Admin. Please wait for the Admin to reset your password.")
             st.markdown('</div>', unsafe_allow_html=True)
+        
+        # Footer
+        st.markdown("""
+        <div class="footer-text">
+            Created by Joseph in 2026
+        </div>
+        """, unsafe_allow_html=True)
 
 # -------------------------------------------------
 # Home Page
@@ -210,9 +231,9 @@ def home_page():
     col_left, col_right = st.columns([5, 1])
     with col_left:
         st.markdown(f"""
-        <h2 style="margin-bottom:0;">Welcome back,
-        <span style="color:#dc2626;">{st.session_state.username}</span></h2>
-        <p style="color:#6b7280;">Select a module or manage your account</p>
+        <h2 style="margin-bottom:0; color:white;">Welcome back,
+        <span style="color:#fca5a5;">{st.session_state.username}</span></h2>
+        <p style="color:#e5e7eb;">Select a module or manage your account</p>
         """, unsafe_allow_html=True)
     with col_right:
         if st.button("Logout", use_container_width=True):
@@ -279,7 +300,7 @@ def home_page():
     left, center, right = st.columns([1, 2.4, 1])
    
     with center:
-        tab1, tab2, tab3 = st.tabs(["👤 My Account", "👥 Users", "🔑 Admin Resets"])
+        tab1, tab2, tab3 = st.tabs(["👤 My Account", "👥 Users", "🔑 Admin Panel"])
        
         with tab1:
             st.markdown("#### Update Username or Password")
@@ -317,7 +338,7 @@ def home_page():
         
         with tab2:
             st.markdown("#### Registered Users")
-            for user in st.session_state.users.keys():
+            for user in list(st.session_state.users.keys()):
                 if user == st.session_state.username:
                     st.markdown(f"""
                     <div style="padding:10px 15px; background:#fee2e2; border-radius:10px; margin-bottom:8px;">
@@ -331,14 +352,14 @@ def home_page():
                     </div>
                     """, unsafe_allow_html=True)
         
-        # ========== ADMIN RESETS (Improved) ==========
         with tab3:
             if st.session_state.username != "Administrator":
-                st.warning("Only the Administrator can manage password resets.")
+                st.warning("Only the Administrator can access this panel.")
             else:
-                st.markdown("#### Admin Password Management")
+                st.markdown("#### Admin Panel")
                 
-                st.markdown("##### 1. Pending Reset Requests")
+                # Pending Resets
+                st.markdown("##### Pending Password Reset Requests")
                 if not st.session_state.pending_resets:
                     st.info("No pending reset requests.")
                 else:
@@ -347,23 +368,17 @@ def home_page():
                         with col_a:
                             st.write(f"**{user}** requested a password reset")
                         with col_b:
-                            if st.button("Clear Request", key=f"clear_{user}"):
+                            if st.button("Clear", key=f"clear_{user}"):
                                 st.session_state.pending_resets.remove(user)
                                 st.rerun()
                 
                 st.markdown("---")
-                st.markdown("##### 2. Manually Reset Any User Password")
                 
+                # Reset Password
+                st.markdown("##### Reset Any User Password")
                 with st.form("admin_reset_form"):
-                    target_user = st.selectbox(
-                        "Select user to reset",
-                        options=list(st.session_state.users.keys())
-                    )
-                    new_password = st.text_input(
-                        "New Password",
-                        type="password",
-                        help="Must contain letters and numbers (min 6 characters)"
-                    )
+                    target_user = st.selectbox("Select user", options=list(st.session_state.users.keys()))
+                    new_password = st.text_input("New Password", type="password")
                     confirm_new = st.text_input("Confirm New Password", type="password")
                     
                     if st.form_submit_button("Reset Password", use_container_width=True):
@@ -377,10 +392,27 @@ def home_page():
                             st.session_state.users[target_user] = new_password
                             if target_user in st.session_state.pending_resets:
                                 st.session_state.pending_resets.remove(target_user)
-                            st.success(f"Password for **{target_user}** has been successfully reset!")
+                            st.success(f"Password for **{target_user}** has been reset!")
+                
+                st.markdown("---")
+                
+                # Delete User
+                st.markdown("##### Remove User")
+                with st.form("delete_user_form"):
+                    users_to_delete = [u for u in st.session_state.users.keys() if u != "Administrator"]
+                    if not users_to_delete:
+                        st.info("No other users to delete.")
+                    else:
+                        user_to_delete = st.selectbox("Select user to remove", options=users_to_delete)
+                        if st.form_submit_button("Delete User", use_container_width=True):
+                            del st.session_state.users[user_to_delete]
+                            if user_to_delete in st.session_state.pending_resets:
+                                st.session_state.pending_resets.remove(user_to_delete)
+                            st.success(f"User **{user_to_delete}** has been removed.")
+                            st.rerun()
 
 # -------------------------------------------------
-# Shared Data Loader
+# Shared Data Loader + Modules (same as before)
 # -------------------------------------------------
 def load_and_prepare(uploaded):
     xlsx = pd.ExcelFile(uploaded)
@@ -442,9 +474,6 @@ def load_and_prepare(uploaded):
     
     return df, None
 
-# -------------------------------------------------
-# MODULE 1: Transfer Hub
-# -------------------------------------------------
 def transfer_hub():
     col1, col2 = st.columns([5, 1])
     with col1:
@@ -548,9 +577,6 @@ def transfer_hub():
             use_container_width=True
         )
 
-# -------------------------------------------------
-# MODULE 2: Stock Health
-# -------------------------------------------------
 def stock_health():
     col1, col2 = st.columns([5, 1])
     with col1:
@@ -632,9 +658,6 @@ def stock_health():
         use_container_width=True
     )
 
-# -------------------------------------------------
-# MODULE 3: Smart LPO
-# -------------------------------------------------
 def smart_lpo():
     col1, col2 = st.columns([5, 1])
     with col1:
