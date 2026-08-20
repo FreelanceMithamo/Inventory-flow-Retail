@@ -598,3 +598,158 @@ def stock_health():
     with col1:
         st.markdown("## ❤️ Stock Health Analyzer")
         st.caption("Overstock • Dead Stock • Stockouts • Slow-moving items")
+    with col2:
+        if st.button("← Back", use_container_width=True, key="health_back"):
+            st.session_state.module = None
+            st.rerun()
+    
+    st.markdown("---")
+    
+    uploaded = st.file_uploader("Upload Excel file (Sales + Stocks sheets)", type=["xlsx", "xls"], key="health_upload")
+    
+    if uploaded is None:
+        st.info("Upload your Sales + Stocks Excel file to analyse inventory health.")
+        return
+    
+    df, error = load_and_prepare(uploaded)
+    if error:
+        st.error(error)
+        return
+    
+    df["Status"] = "Healthy"
+    df.loc[df["Current_Stock"] <= 0, "Status"] = "Stockout"
+    df.loc[(df["Current_Stock"] > 0) & (df["Total_Sold"] == 0), "Status"] = "Dead Stock"
+    
+    df["Months_Cover"] = np.where(df["Monthly_Avg"] > 0, df["Current_Stock"] / df["Monthly_Avg"], 999)
+    df.loc[(df["Status"] == "Healthy") & (df["Months_Cover"] > 4) & (df["Current_Stock"] > 5), "Status"] = "Overstock"
+    df.loc[(df["Status"] == "Healthy") & (df["Months_Cover"] > 2.5) & (df["Current_Stock"] > 3), "Status"] = "Slow-moving"
+    
+    st.markdown("### Key Metrics")
+    k1, k2, k3, k4, k5 = st.columns(5)
+    k1.metric("Total SKU-Branch", f"{len(df):,}")
+    k2.metric("Stockouts", f"{(df['Status']=='Stockout').sum():,}")
+    k3.metric("Dead Stock", f"{(df['Status']=='Dead Stock').sum():,}")
+    k4.metric("Overstock", f"{(df['Status']=='Overstock').sum():,}")
+    k5.metric("Slow-moving", f"{(df['Status']=='Slow-moving').sum():,}")
+    
+    st.markdown("---")
+    
+    tab1, tab2, tab3, tab4 = st.tabs(["🔴 Stockouts", "⚫ Dead Stock", "🟠 Overstock", "🟡 Slow-moving"])
+    
+    display_cols = ["Branch", "Brand", "ItemGroup1", "Model No", "Current_Stock", "Total_Sold", "Monthly_Avg", "Months_Cover", "Status"]
+    
+    with tab1:
+        stockouts = df[df["Status"] == "Stockout"].sort_values("Total_Sold", ascending=False)
+        st.write(f"**{len(stockouts)}** items")
+        st.dataframe(stockouts[display_cols], use_container_width=True, height=400)
+    
+    with tab2:
+        dead = df[df["Status"] == "Dead Stock"].sort_values("Current_Stock", ascending=False)
+        st.write(f"**{len(dead)}** items • These have stock but zero sales")
+        st.dataframe(dead[display_cols], use_container_width=True, height=400)
+    
+    with tab3:
+        over = df[df["Status"] == "Overstock"].sort_values("Months_Cover", ascending=False)
+        st.write(f"**{len(over)}** items • More than 4 months of cover")
+        st.dataframe(over[display_cols], use_container_width=True, height=400)
+    
+    with tab4:
+        slow = df[df["Status"] == "Slow-moving"].sort_values("Months_Cover", ascending=False)
+        st.write(f"**{len(slow)}** items")
+        st.dataframe(slow[display_cols], use_container_width=True, height=400)
+    
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        df[display_cols].to_excel(writer, sheet_name="Full_Health", index=False)
+        df[df["Status"]=="Stockout"][display_cols].to_excel(writer, sheet_name="Stockouts", index=False)
+        df[df["Status"]=="Dead Stock"][display_cols].to_excel(writer, sheet_name="Dead_Stock", index=False)
+        df[df["Status"]=="Overstock"][display_cols].to_excel(writer, sheet_name="Overstock", index=False)
+        df[df["Status"]=="Slow-moving"][display_cols].to_excel(writer, sheet_name="Slow_moving", index=False)
+    
+    st.download_button(
+        "⬇️ Download Full Stock Health Report",
+        data=output.getvalue(),
+        file_name=f"Stock_Health_Report_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True
+    )
+
+def smart_lpo():
+    col1, col2 = st.columns([5, 1])
+    with col1:
+        st.markdown("## 📄📋 Smart LPO Generator")
+        st.caption("Automated Local Purchase Order suggestions based on sales velocity")
+    with col2:
+        if st.button("← Back", use_container_width=True, key="lpo_back"):
+            st.session_state.module = None
+            st.rerun()
+    
+    st.markdown("---")
+    
+    uploaded = st.file_uploader("Upload Excel file (Sales + Stocks sheets)", type=["xlsx", "xls"], key="lpo_upload")
+    
+    if uploaded is None:
+        st.info("Upload your Sales + Stocks Excel file to generate LPO suggestions.")
+        return
+    
+    df, error = load_and_prepare(uploaded)
+    if error:
+        st.error(error)
+        return
+    
+    col_a, col_b = st.columns(2)
+    with col_a:
+        cover_months = st.slider("Target cover (months)", 1.0, 4.0, 2.0, 0.5)
+    with col_b:
+        min_sales = st.number_input("Minimum monthly sales to consider", 0.0, 10.0, 0.5, 0.5)
+    
+    df["Target_Stock"] = (df["Monthly_Avg"] * cover_months).round(0)
+    df["Suggested_Order"] = (df["Target_Stock"] - df["Current_Stock"]).clip(lower=0).astype(int)
+    
+    lpo = df[
+        (df["Suggested_Order"] > 0) &
+        (df["Monthly_Avg"] >= min_sales)
+    ].copy()
+    
+    lpo = lpo.sort_values(["Branch", "Suggested_Order"], ascending=[True, False])
+    
+    st.success(f"**{len(lpo)}** order lines generated across **{lpo['Branch'].nunique()}** branches")
+    
+    st.markdown("### Summary by Branch")
+    branch_summary = lpo.groupby("Branch").agg(
+        Items_to_Order=("Suggested_Order", "count"),
+        Total_Units=("Suggested_Order", "sum")
+    ).sort_values("Total_Units", ascending=False).reset_index()
+    st.dataframe(branch_summary, use_container_width=True)
+    
+    st.markdown("### Detailed LPO Suggestions")
+    display_cols = ["Branch", "Brand", "ItemGroup1", "Model No", "Current_Stock", "Monthly_Avg", "Target_Stock", "Suggested_Order"]
+    st.dataframe(lpo[display_cols], use_container_width=True, height=450)
+    
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        lpo[display_cols].to_excel(writer, sheet_name="LPO_Details", index=False)
+        branch_summary.to_excel(writer, sheet_name="Branch_Summary", index=False)
+    
+    st.download_button(
+        "⬇️ Download Smart LPO Report",
+        data=output.getvalue(),
+        file_name=f"Smart_LPO_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True
+    )
+
+# -------------------------------------------------
+# Router
+# -------------------------------------------------
+if not st.session_state.authenticated:
+    login_page()
+else:
+    if st.session_state.module is None:
+        home_page()
+    elif st.session_state.module == "transfer":
+        transfer_hub()
+    elif st.session_state.module == "health":
+        stock_health()
+    elif st.session_state.module == "lpo":
+        smart_lpo()
