@@ -534,6 +534,36 @@ def stock_health():
 # MODULE 3: Smart LPO
 # -------------------------------------------------
 def smart_lpo():
+    # Darker grey background ONLY for this module
+    st.markdown("""
+    <style>
+        /* Darker background only while in Smart LPO */
+        .stApp {
+            background: linear-gradient(135deg, #4b5563 0%, #374151 100%) !important;
+        }
+        
+        /* Keep all text readable on dark background */
+        .stMarkdown, .stMarkdown p, .stMarkdown h1, .stMarkdown h2, 
+        .stMarkdown h3, .stMarkdown h4, label, .stTextInput label {
+            color: #f3f4f6 !important;
+        }
+        
+        /* Make metric cards and info boxes visible */
+        div[data-testid="stMetric"] {
+            background: rgba(255,255,255,0.08);
+            border-radius: 12px;
+            padding: 12px;
+        }
+        
+        /* File uploader and other elements */
+        .stFileUploader, .stSlider, .stNumberInput {
+            background: rgba(255,255,255,0.05);
+            border-radius: 10px;
+            padding: 8px;
+        }
+    </style>
+    """, unsafe_allow_html=True)
+
     col1, col2 = st.columns([5, 1])
     with col1:
         st.markdown("## 📄📋 Smart LPO Generator")
@@ -602,18 +632,3 @@ def smart_lpo():
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         use_container_width=True
     )
-
-# -------------------------------------------------
-# Router
-# -------------------------------------------------
-if not st.session_state.authenticated:
-    login_page()
-else:
-    if st.session_state.module is None:
-        home_page()
-    elif st.session_state.module == "transfer":
-        transfer_hub()
-    elif st.session_state.module == "health":
-        stock_health()
-    elif st.session_state.module == "lpo":
-        smart_lpo()
