@@ -6,9 +6,6 @@ from datetime import datetime
 import warnings
 warnings.filterwarnings("ignore")
 
-# -------------------------------------------------
-# Page Config
-# -------------------------------------------------
 st.set_page_config(
     page_title="StockFlow Retail",
     page_icon="📦",
@@ -17,108 +14,97 @@ st.set_page_config(
 )
 
 # -------------------------------------------------
-# Enhanced CSS - Red / White / Grey Theme
+# Enhanced CSS
 # -------------------------------------------------
 st.markdown("""
 <style>
-    /* Main background */
     .stApp {
         background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
     }
+    #MainMenu, footer, header {visibility: hidden;}
     
-    /* Hide default Streamlit elements */
-    #MainMenu {visibility: hidden;}
-    footer {visibility: hidden;}
-    header {visibility: hidden;}
-    
-    /* Login Card */
     .login-card {
         background: white;
         border-radius: 20px;
         padding: 2.5rem 2.8rem;
-        box-shadow: 0 25px 50px -12px rgba(220, 38, 38, 0.15);
+        box-shadow: 0 25px 50px -12px rgba(220, 38, 38, 0.18);
         border-top: 6px solid #dc2626;
         max-width: 420px;
         margin: 0 auto;
     }
     
-    /* Module cards */
     .module-card {
         background: white;
         border-radius: 18px;
-        padding: 1.8rem 1.5rem;
+        padding: 1.9rem 1.5rem;
         box-shadow: 0 10px 15px -3px rgba(0,0,0,0.07);
         border: 1px solid #e5e7eb;
-        transition: all 0.25s ease;
+        transition: all 0.28s ease;
         height: 100%;
         text-align: center;
+        cursor: pointer;
     }
     .module-card:hover {
-        transform: translateY(-6px);
-        box-shadow: 0 20px 25px -5px rgba(220, 38, 38, 0.12);
-        border-color: #fca5a5;
+        transform: translateY(-8px);
+        box-shadow: 0 25px 30px -5px rgba(220, 38, 38, 0.18);
+        border-color: #f87171;
+        background: #fff5f5;
     }
     
     .logo-circle {
-        width: 74px;
-        height: 74px;
+        width: 80px;
+        height: 80px;
         border-radius: 50%;
         display: flex;
         align-items: center;
         justify-content: center;
-        font-size: 2.1rem;
+        font-size: 1.9rem;
         margin: 0 auto 1.1rem auto;
+        transition: all 0.28s ease;
+    }
+    .module-card:hover .logo-circle {
+        transform: scale(1.08);
     }
     
     .transfer { background: #fee2e2; color: #dc2626; }
     .health   { background: #dcfce7; color: #16a34a; }
     .lpo      { background: #ffedd5; color: #ea580c; }
     
-    /* Buttons */
     .stButton > button {
         background: #dc2626 !important;
         color: white !important;
         border: none !important;
         border-radius: 10px !important;
         font-weight: 600 !important;
-        padding: 0.6rem 1.2rem !important;
         transition: all 0.2s;
     }
     .stButton > button:hover {
         background: #b91c1c !important;
-        box-shadow: 0 4px 12px rgba(220, 38, 38, 0.35);
+        box-shadow: 0 6px 14px rgba(220, 38, 38, 0.35);
     }
     
-    /* Secondary button */
-    .stButton > button[kind="secondary"] {
-        background: #f3f4f6 !important;
-        color: #374151 !important;
-    }
+    h1, h2, h3 { color: #1f2937 !important; }
     
-    h1, h2, h3 {
-        color: #1f2937 !important;
-    }
-    
-    /* Input fields */
-    .stTextInput > div > div > input {
-        border-radius: 10px !important;
-        border: 1.5px solid #d1d5db !important;
-    }
-    .stTextInput > div > div > input:focus {
-        border-color: #dc2626 !important;
-        box-shadow: 0 0 0 3px rgba(220, 38, 38, 0.15) !important;
+    .user-badge {
+        background: #fee2e2;
+        color: #dc2626;
+        padding: 4px 12px;
+        border-radius: 20px;
+        font-size: 0.85rem;
+        font-weight: 600;
     }
 </style>
 """, unsafe_allow_html=True)
 
 # -------------------------------------------------
-# Auth
+# Auth & Users
 # -------------------------------------------------
-USERS = {
-    "admin": "stockflow2025",
-    "demo": "demo123",
-    "manager": "branch123"
-}
+if "users" not in st.session_state:
+    st.session_state.users = {
+        "admin": "stockflow2025",
+        "demo": "demo123",
+        "manager": "branch123"
+    }
 
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
@@ -129,78 +115,69 @@ if "module" not in st.session_state:
 
 def login_page():
     st.markdown("<br><br>", unsafe_allow_html=True)
-    
     col1, col2, col3 = st.columns([1, 1.3, 1])
     
     with col2:
         st.markdown("""
         <div style="text-align:center; margin-bottom: 1.8rem;">
-            <div style="font-size: 3.8rem; margin-bottom: 0.3rem;">📦</div>
-            <h1 style="margin:0; font-size: 2.6rem; font-weight: 800; color: #dc2626;">
-                StockFlow
-            </h1>
-            <p style="color: #6b7280; font-size: 1.15rem; margin-top: 0.3rem;">
-                Retail Inventory Intelligence Platform
-            </p>
+            <div style="font-size: 3.8rem;">📦</div>
+            <h1 style="margin:0; font-size: 2.6rem; font-weight: 800; color: #dc2626;">StockFlow</h1>
+            <p style="color: #6b7280; font-size: 1.15rem;">Retail Inventory Intelligence Platform</p>
         </div>
         """, unsafe_allow_html=True)
         
-        # Login Card
         st.markdown('<div class="login-card">', unsafe_allow_html=True)
-        
         st.markdown("### Sign in to your account")
-        st.markdown("<p style='color:#6b7280; margin-bottom:1.5rem;'>Enter your credentials below</p>", unsafe_allow_html=True)
         
-        with st.form("login_form", clear_on_submit=False):
+        with st.form("login_form"):
             username = st.text_input("Username", placeholder="Enter username")
             password = st.text_input("Password", type="password", placeholder="Enter password")
-            
             st.markdown("<br>", unsafe_allow_html=True)
-            submitted = st.form_submit_button("Sign In", use_container_width=True)
-            
-            if submitted:
-                if username in USERS and USERS[username] == password:
+            if st.form_submit_button("Sign In", use_container_width=True):
+                if username in st.session_state.users and st.session_state.users[username] == password:
                     st.session_state.authenticated = True
                     st.session_state.username = username
                     st.rerun()
                 else:
                     st.error("Invalid username or password")
-        
-        st.markdown("</div>", unsafe_allow_html=True)
+        st.markdown('</div>', unsafe_allow_html=True)
         
         st.markdown("""
         <div style="text-align:center; margin-top: 2rem; color: #9ca3af; font-size: 0.9rem;">
             Demo accounts:<br>
-            <b>admin</b> / stockflow2025 &nbsp;&nbsp;|&nbsp;&nbsp; <b>demo</b> / demo123
+            <b>admin</b> / stockflow2025 &nbsp;|&nbsp; <b>demo</b> / demo123
         </div>
         """, unsafe_allow_html=True)
 
 def home_page():
-    # Top bar
-    col_left, col_right = st.columns([4, 1])
+    # Header
+    col_left, col_right = st.columns([5, 1])
     with col_left:
         st.markdown(f"""
-        <h2 style="margin-bottom:0;">Welcome back, <span style="color:#dc2626;">{st.session_state.username}</span></h2>
-        <p style="color:#6b7280;">Select a module to continue</p>
+        <h2 style="margin-bottom:0;">Welcome back, 
+        <span style="color:#dc2626;">{st.session_state.username}</span></h2>
+        <p style="color:#6b7280;">Select a module or manage your account</p>
         """, unsafe_allow_html=True)
     with col_right:
         if st.button("Logout", use_container_width=True):
-            for key in list(st.session_state.keys()):
-                del st.session_state[key]
+            for key in ["authenticated", "username", "module"]:
+                if key in st.session_state:
+                    del st.session_state[key]
             st.rerun()
     
     st.markdown("---")
     
+    # Modules
     c1, c2, c3 = st.columns(3, gap="large")
     
     with c1:
         st.markdown("""
         <div class="module-card">
-            <div class="logo-circle transfer">🔄</div>
+            <div class="logo-circle transfer">🚚📦🚚</div>
             <h3 style="margin:0.5rem 0;">Transfer Hub</h3>
             <p style="color:#6b7280; font-size:0.95rem; line-height:1.5;">
-                Smart inter-branch stock transfers.<br>
-                Move excess inventory to high-demand locations.
+                Inter-branch stock transfers<br>
+                Move excess to high-demand branches
             </p>
         </div>
         """, unsafe_allow_html=True)
@@ -215,8 +192,8 @@ def home_page():
             <div class="logo-circle health">❤️</div>
             <h3 style="margin:0.5rem 0;">Stock Health</h3>
             <p style="color:#6b7280; font-size:0.95rem; line-height:1.5;">
-                Detect overstock, dead stock,<br>
-                aged inventory and stockouts.
+                Overstock • Dead stock<br>
+                Aged inventory & Stockouts
             </p>
         </div>
         """, unsafe_allow_html=True)
@@ -228,11 +205,11 @@ def home_page():
     with c3:
         st.markdown("""
         <div class="module-card">
-            <div class="logo-circle lpo">📋</div>
+            <div class="logo-circle lpo">📄📋</div>
             <h3 style="margin:0.5rem 0;">Smart LPO</h3>
             <p style="color:#6b7280; font-size:0.95rem; line-height:1.5;">
-                Automated purchase order<br>
-                suggestions for every branch.
+                Automated Local Purchase Orders<br>
+                for all branches
             </p>
         </div>
         """, unsafe_allow_html=True)
@@ -241,20 +218,57 @@ def home_page():
             st.session_state.module = "lpo"
             st.rerun()
     
-    st.markdown("<br><br>", unsafe_allow_html=True)
-    st.markdown("""
-    <div style="text-align:center; color:#9ca3af; font-size:0.9rem;">
-        StockFlow Retail • Built for multi-branch pharmacies, kiosks, restaurants & retail stores
-    </div>
-    """, unsafe_allow_html=True)
+    st.markdown("<br>", unsafe_allow_html=True)
+    
+    # Account & Users section
+    st.markdown("### Account & Users")
+    
+    tab1, tab2 = st.tabs(["👤 My Account", "👥 Users"])
+    
+    with tab1:
+        st.markdown("#### Change Password")
+        with st.form("change_password"):
+            current_pw = st.text_input("Current Password", type="password")
+            new_pw = st.text_input("New Password", type="password")
+            confirm_pw = st.text_input("Confirm New Password", type="password")
+            
+            if st.form_submit_button("Update Password"):
+                user = st.session_state.username
+                if st.session_state.users.get(user) != current_pw:
+                    st.error("Current password is incorrect")
+                elif new_pw != confirm_pw:
+                    st.error("New passwords do not match")
+                elif len(new_pw) < 6:
+                    st.error("Password must be at least 6 characters")
+                else:
+                    st.session_state.users[user] = new_pw
+                    st.success("Password updated successfully!")
+    
+    with tab2:
+        st.markdown("#### Registered Users")
+        st.caption("Currently logged in user is highlighted")
+        
+        for user in st.session_state.users.keys():
+            if user == st.session_state.username:
+                st.markdown(f"""
+                <div style="padding:10px 15px; background:#fee2e2; border-radius:10px; margin-bottom:8px;">
+                    <span class="user-badge">YOU</span> &nbsp; <b>{user}</b> (currently logged in)
+                </div>
+                """, unsafe_allow_html=True)
+            else:
+                st.markdown(f"""
+                <div style="padding:10px 15px; background:#f3f4f6; border-radius:10px; margin-bottom:8px;">
+                    <b>{user}</b>
+                </div>
+                """, unsafe_allow_html=True)
 
 # -------------------------------------------------
-# Transfer Hub (same solid logic as before)
+# Transfer Hub (same proven logic)
 # -------------------------------------------------
 def transfer_hub():
     col1, col2 = st.columns([5, 1])
     with col1:
-        st.markdown("## 🔄 Transfer Hub")
+        st.markdown("## 🚚📦 Transfer Hub")
         st.caption("General inter-branch transfer recommendations")
     with col2:
         if st.button("← Back", use_container_width=True):
@@ -264,12 +278,12 @@ def transfer_hub():
     st.markdown("---")
     
     uploaded = st.file_uploader(
-        "Upload Excel file (must contain Sales + Stocks sheets in wide format)",
+        "Upload Excel file (Sales + Stocks sheets in wide format)",
         type=["xlsx", "xls"]
     )
     
     if uploaded is None:
-        st.info("Please upload your Sales + Stocks Excel file to generate recommendations.")
+        st.info("Upload your Sales + Stocks Excel file to generate recommendations.")
         return
     
     try:
@@ -299,7 +313,7 @@ def transfer_hub():
                 key = key + " | " + p
             return key, brand, group, model
         
-        # Sales
+        # Sales processing
         df_s = df_sales.copy()
         df_s["Product_Key"], brand_col, group_col, model_col = make_key(df_s)
         fixed = ["Product_Key"]
@@ -316,7 +330,7 @@ def transfer_hub():
         )
         sales_agg["Monthly_Avg"] = (sales_agg["Total_Sold"] / 8).round(2)
         
-        # Stocks
+        # Stock processing
         df_st = df_stock.copy()
         df_st["Product_Key"], _, _, _ = make_key(df_st)
         fixed2 = ["Product_Key"]
@@ -335,7 +349,7 @@ def transfer_hub():
         if group_col: df = df.rename(columns={group_col: "ItemGroup1"})
         if model_col: df = df.rename(columns={model_col: "Model No"})
         
-        # Generate transfers
+        # Transfer logic
         MIN_KEEP = 1
         transfers = []
         
@@ -404,7 +418,7 @@ def transfer_hub():
                 ascending=[False, False]
             ).reset_index(drop=True)
             
-            st.success(f"**{len(report)}** recommendations • Total units to move: **{report['Donor transfer Qty'].sum()}**")
+            st.success(f"**{len(report)}** recommendations • Total units: **{report['Donor transfer Qty'].sum()}**")
             st.dataframe(report, use_container_width=True, height=480)
             
             output = BytesIO()
@@ -420,18 +434,18 @@ def transfer_hub():
             )
             
     except Exception as e:
-        st.error(f"Error processing file: {e}")
+        st.error(f"Error: {e}")
 
 def stock_health():
     st.markdown("## ❤️ Stock Health")
-    st.info("This module is next. We will build it together.")
+    st.info("This module will be built next.")
     if st.button("← Back to Modules"):
         st.session_state.module = None
         st.rerun()
 
 def smart_lpo():
-    st.markdown("## 📋 Smart LPO")
-    st.info("This module is next. We will build it together.")
+    st.markdown("## 📄 Smart LPO")
+    st.info("This module will be built next.")
     if st.button("← Back to Modules"):
         st.session_state.module = None
         st.rerun()
