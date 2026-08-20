@@ -18,53 +18,36 @@ st.set_page_config(
 # -------------------------------------------------
 st.markdown("""
 <style>
-    /* ========== BACKGROUND - Modern Appliance Showroom ========== */
     .stApp {
-        background: 
-            linear-gradient(rgba(15, 23, 42, 0.72), rgba(15, 23, 42, 0.78)),
-            url('https://images.unsplash.com/photo-1556740738-b6a03c8b2b6b?ixlib=rb-4.0.3&auto=format&fit=crop&w=1920&q=80');
-        background-size: cover;
-        background-position: center;
-        background-attachment: fixed;
-        background-repeat: no-repeat;
+        background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
     }
-    
-    /* Make content readable on dark background */
-    .stApp > header {
-        background: transparent;
-    }
-    
     #MainMenu, footer, header {visibility: hidden;}
     
-    /* Login Card */
     .login-card {
-        background: rgba(255, 255, 255, 0.95);
+        background: white;
         border-radius: 20px;
         padding: 2.5rem 2.8rem;
-        box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.35);
+        box-shadow: 0 25px 50px -12px rgba(220, 38, 38, 0.18);
         border-top: 6px solid #dc2626;
         max-width: 420px;
         margin: 0 auto;
-        backdrop-filter: blur(8px);
     }
     
-    /* Module cards */
     .module-card {
-        background: rgba(255, 255, 255, 0.94);
+        background: white;
         border-radius: 18px;
         padding: 1.9rem 1.5rem;
-        box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.2);
-        border: 1px solid rgba(255,255,255,0.3);
+        box-shadow: 0 10px 15px -3px rgba(0,0,0,0.07);
+        border: 1px solid #e5e7eb;
         transition: all 0.28s ease;
         height: 100%;
         text-align: center;
-        backdrop-filter: blur(6px);
     }
     .module-card:hover {
         transform: translateY(-8px);
-        box-shadow: 0 25px 35px -5px rgba(220, 38, 38, 0.25);
+        box-shadow: 0 25px 30px -5px rgba(220, 38, 38, 0.18);
         border-color: #f87171;
-        background: rgba(255, 245, 245, 0.97);
+        background: #fff5f5;
     }
     
     .logo-circle {
@@ -82,7 +65,7 @@ st.markdown("""
     .health   { background: #dcfce7; color: #16a34a; }
     .lpo      { background: #ffedd5; color: #ea580c; }
     
-    /* Buttons */
+    /* Primary red buttons */
     .stButton > button {
         background: #dc2626 !important;
         color: white !important;
@@ -92,12 +75,17 @@ st.markdown("""
     }
     .stButton > button:hover {
         background: #b91c1c !important;
-        box-shadow: 0 6px 14px rgba(220, 38, 38, 0.4);
     }
     
-    /* Force dark text for visibility */
-    label, .stTextInput label, .stMarkdown, .stMarkdown p, 
-    .stMarkdown h1, .stMarkdown h2, .stMarkdown h3, .stMarkdown h4 {
+    /* ===== FIX: Make labels and text dark ===== */
+    label {
+        color: #1f2937 !important;
+        font-weight: 600 !important;
+    }
+    .stTextInput label {
+        color: #1f2937 !important;
+    }
+    .stMarkdown, .stMarkdown p, .stMarkdown h1, .stMarkdown h2, .stMarkdown h3, .stMarkdown h4 {
         color: #1f2937 !important;
     }
     
@@ -120,11 +108,6 @@ st.markdown("""
         border-radius: 20px;
         font-size: 0.8rem;
         font-weight: 600;
-    }
-    
-    /* Make the main content area slightly transparent so background shows */
-    .block-container {
-        background: transparent !important;
     }
 </style>
 """, unsafe_allow_html=True)
