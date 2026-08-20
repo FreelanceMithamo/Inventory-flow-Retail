@@ -14,7 +14,7 @@ st.set_page_config(
 )
 
 # -------------------------------------------------
-# Enhanced CSS
+# CSS
 # -------------------------------------------------
 st.markdown("""
 <style>
@@ -42,7 +42,6 @@ st.markdown("""
         transition: all 0.28s ease;
         height: 100%;
         text-align: center;
-        cursor: pointer;
     }
     .module-card:hover {
         transform: translateY(-8px);
@@ -76,28 +75,43 @@ st.markdown("""
         border: none !important;
         border-radius: 10px !important;
         font-weight: 600 !important;
-        transition: all 0.2s;
     }
     .stButton > button:hover {
         background: #b91c1c !important;
         box-shadow: 0 6px 14px rgba(220, 38, 38, 0.35);
     }
     
-    h1, h2, h3 { color: #1f2937 !important; }
+    /* Better input visibility */
+    .stTextInput > div > div > input {
+        background-color: #ffffff !important;
+        color: #1f2937 !important;
+        border: 1.5px solid #d1d5db !important;
+        border-radius: 8px !important;
+    }
+    .stTextInput > div > div > input:focus {
+        border-color: #dc2626 !important;
+        box-shadow: 0 0 0 3px rgba(220, 38, 38, 0.15) !important;
+    }
     
     .user-badge {
         background: #fee2e2;
         color: #dc2626;
-        padding: 4px 12px;
+        padding: 3px 10px;
         border-radius: 20px;
-        font-size: 0.85rem;
+        font-size: 0.8rem;
         font-weight: 600;
+    }
+    
+    /* Narrow account section */
+    .account-container {
+        max-width: 520px;
+        margin: 0 auto;
     }
 </style>
 """, unsafe_allow_html=True)
 
 # -------------------------------------------------
-# Auth & Users
+# Auth
 # -------------------------------------------------
 if "users" not in st.session_state:
     st.session_state.users = {
@@ -150,7 +164,6 @@ def login_page():
         """, unsafe_allow_html=True)
 
 def home_page():
-    # Header
     col_left, col_right = st.columns([5, 1])
     with col_left:
         st.markdown(f"""
@@ -175,7 +188,7 @@ def home_page():
         <div class="module-card">
             <div class="logo-circle transfer">🚚📦🚚</div>
             <h3 style="margin:0.5rem 0;">Transfer Hub</h3>
-            <p style="color:#6b7280; font-size:0.95rem; line-height:1.5;">
+            <p style="color:#6b7280; font-size:0.95rem;">
                 Inter-branch stock transfers<br>
                 Move excess to high-demand branches
             </p>
@@ -191,7 +204,7 @@ def home_page():
         <div class="module-card">
             <div class="logo-circle health">❤️</div>
             <h3 style="margin:0.5rem 0;">Stock Health</h3>
-            <p style="color:#6b7280; font-size:0.95rem; line-height:1.5;">
+            <p style="color:#6b7280; font-size:0.95rem;">
                 Overstock • Dead stock<br>
                 Aged inventory & Stockouts
             </p>
@@ -207,7 +220,7 @@ def home_page():
         <div class="module-card">
             <div class="logo-circle lpo">📄📋</div>
             <h3 style="margin:0.5rem 0;">Smart LPO</h3>
-            <p style="color:#6b7280; font-size:0.95rem; line-height:1.5;">
+            <p style="color:#6b7280; font-size:0.95rem;">
                 Automated Local Purchase Orders<br>
                 for all branches
             </p>
@@ -220,50 +233,54 @@ def home_page():
     
     st.markdown("<br>", unsafe_allow_html=True)
     
-    # Account & Users section
+    # ---------- Account & Users (narrower) ----------
     st.markdown("### Account & Users")
     
-    tab1, tab2 = st.tabs(["👤 My Account", "👥 Users"])
+    # Center and limit width
+    left, center, right = st.columns([1, 2.2, 1])
     
-    with tab1:
-        st.markdown("#### Change Password")
-        with st.form("change_password"):
-            current_pw = st.text_input("Current Password", type="password")
-            new_pw = st.text_input("New Password", type="password")
-            confirm_pw = st.text_input("Confirm New Password", type="password")
-            
-            if st.form_submit_button("Update Password"):
-                user = st.session_state.username
-                if st.session_state.users.get(user) != current_pw:
-                    st.error("Current password is incorrect")
-                elif new_pw != confirm_pw:
-                    st.error("New passwords do not match")
-                elif len(new_pw) < 6:
-                    st.error("Password must be at least 6 characters")
-                else:
-                    st.session_state.users[user] = new_pw
-                    st.success("Password updated successfully!")
-    
-    with tab2:
-        st.markdown("#### Registered Users")
-        st.caption("Currently logged in user is highlighted")
+    with center:
+        tab1, tab2 = st.tabs(["👤 My Account", "👥 Users"])
         
-        for user in st.session_state.users.keys():
-            if user == st.session_state.username:
-                st.markdown(f"""
-                <div style="padding:10px 15px; background:#fee2e2; border-radius:10px; margin-bottom:8px;">
-                    <span class="user-badge">YOU</span> &nbsp; <b>{user}</b> (currently logged in)
-                </div>
-                """, unsafe_allow_html=True)
-            else:
-                st.markdown(f"""
-                <div style="padding:10px 15px; background:#f3f4f6; border-radius:10px; margin-bottom:8px;">
-                    <b>{user}</b>
-                </div>
-                """, unsafe_allow_html=True)
+        with tab1:
+            st.markdown("#### Change Password")
+            with st.form("change_password"):
+                current_pw = st.text_input("Current Password", type="password")
+                new_pw = st.text_input("New Password", type="password")
+                confirm_pw = st.text_input("Confirm New Password", type="password")
+                
+                if st.form_submit_button("Update Password", use_container_width=True):
+                    user = st.session_state.username
+                    if st.session_state.users.get(user) != current_pw:
+                        st.error("Current password is incorrect")
+                    elif new_pw != confirm_pw:
+                        st.error("New passwords do not match")
+                    elif len(new_pw) < 6:
+                        st.error("Password must be at least 6 characters")
+                    else:
+                        st.session_state.users[user] = new_pw
+                        st.success("Password updated successfully!")
+        
+        with tab2:
+            st.markdown("#### Registered Users")
+            st.caption("Currently logged in user is highlighted")
+            
+            for user in st.session_state.users.keys():
+                if user == st.session_state.username:
+                    st.markdown(f"""
+                    <div style="padding:10px 15px; background:#fee2e2; border-radius:10px; margin-bottom:8px;">
+                        <span class="user-badge">YOU</span> &nbsp; <b>{user}</b>
+                    </div>
+                    """, unsafe_allow_html=True)
+                else:
+                    st.markdown(f"""
+                    <div style="padding:10px 15px; background:#f3f4f6; border-radius:10px; margin-bottom:8px;">
+                        <b>{user}</b>
+                    </div>
+                    """, unsafe_allow_html=True)
 
 # -------------------------------------------------
-# Transfer Hub (same proven logic)
+# Transfer Hub + placeholders (unchanged logic)
 # -------------------------------------------------
 def transfer_hub():
     col1, col2 = st.columns([5, 1])
@@ -313,7 +330,6 @@ def transfer_hub():
                 key = key + " | " + p
             return key, brand, group, model
         
-        # Sales processing
         df_s = df_sales.copy()
         df_s["Product_Key"], brand_col, group_col, model_col = make_key(df_s)
         fixed = ["Product_Key"]
@@ -330,7 +346,6 @@ def transfer_hub():
         )
         sales_agg["Monthly_Avg"] = (sales_agg["Total_Sold"] / 8).round(2)
         
-        # Stock processing
         df_st = df_stock.copy()
         df_st["Product_Key"], _, _, _ = make_key(df_st)
         fixed2 = ["Product_Key"]
@@ -349,7 +364,6 @@ def transfer_hub():
         if group_col: df = df.rename(columns={group_col: "ItemGroup1"})
         if model_col: df = df.rename(columns={model_col: "Model No"})
         
-        # Transfer logic
         MIN_KEEP = 1
         transfers = []
         
