@@ -15,7 +15,7 @@ st.set_page_config(
 )
 
 # -------------------------------------------------
-# CSS + Background (Improved text visibility)
+# CSS
 # -------------------------------------------------
 st.markdown("""
 <style>
@@ -29,7 +29,6 @@ st.markdown("""
     
     #MainMenu, footer, header {visibility: hidden;}
    
-    /* Login Card - white background so form text is readable */
     .login-card {
         background: rgba(255, 255, 255, 0.96);
         border-radius: 20px;
@@ -85,14 +84,10 @@ st.markdown("""
         background: #b91c1c !important;
     }
    
-    /* ===== TEXT VISIBILITY FIXES ===== */
-    
-    /* Make most text white on the dark background */
     h1, h2, h3, h4, h5, h6, p, span, div, label {
         color: #f3f4f6 !important;
     }
     
-    /* Keep text inside white cards dark and readable */
     .login-card h1, .login-card h2, .login-card h3, 
     .login-card h4, .login-card h5, .login-card p,
     .login-card label, .login-card span, .login-card div {
@@ -104,7 +99,6 @@ st.markdown("""
         color: #1f2937 !important;
     }
     
-    /* Input fields */
     .stTextInput > div > div > input {
         background-color: #ffffff !important;
         color: #111827 !important;
@@ -112,7 +106,6 @@ st.markdown("""
         border-radius: 8px !important;
     }
     
-    /* Tabs text */
     button[data-baseweb="tab"] {
         color: #e5e7eb !important;
     }
@@ -428,7 +421,7 @@ def home_page():
                             st.rerun()
 
 # -------------------------------------------------
-# Shared Data Loader + Modules
+# Shared Data Loader
 # -------------------------------------------------
 def load_and_prepare(uploaded):
     xlsx = pd.ExcelFile(uploaded)
@@ -490,6 +483,9 @@ def load_and_prepare(uploaded):
     
     return df, None
 
+# -------------------------------------------------
+# MODULE 1: Transfer Hub
+# -------------------------------------------------
 def transfer_hub():
     col1, col2 = st.columns([5, 1])
     with col1:
@@ -593,6 +589,9 @@ def transfer_hub():
             use_container_width=True
         )
 
+# -------------------------------------------------
+# MODULE 2: Stock Health
+# -------------------------------------------------
 def stock_health():
     col1, col2 = st.columns([5, 1])
     with col1:
@@ -674,11 +673,14 @@ def stock_health():
         use_container_width=True
     )
 
+# -------------------------------------------------
+# MODULE 3: Smart LPO (REWORKED LOGIC)
+# -------------------------------------------------
 def smart_lpo():
     col1, col2 = st.columns([5, 1])
     with col1:
         st.markdown("## 📄📋 Smart LPO Generator")
-        st.caption("Automated Local Purchase Order suggestions based on sales velocity")
+        st.caption("Conservative ordering logic for bi-monthly replenishment")
     with col2:
         if st.button("← Back", use_container_width=True, key="lpo_back"):
             st.session_state.module = None
@@ -697,39 +699,107 @@ def smart_lpo():
         st.error(error)
         return
     
-    col_a, col_b = st.columns(2)
+    st.markdown("### Ordering Settings")
+    col_a, col_b, col_c = st.columns(3)
+    
     with col_a:
-        cover_months = st.slider("Target cover (months)", 1.0, 4.0, 2.0, 0.5)
+        # Much more conservative default
+        target_months = st.slider(
+            "Target Months of Cover",
+            min_value=0.5,
+            max_value=2.0,
+            value=1.0,          # ← Default now 1 month (was 2)
+            step=0.1,
+            help="Since you order twice a month, 0.8 – 1.2 months is usually enough"
+        )
+    
     with col_b:
-        min_sales = st.number_input("Minimum monthly sales to consider", 0.0, 10.0, 0.5, 0.5)
+        min_sales = st.number_input(
+            "Minimum Monthly Sales",
+            min_value=0.0,
+            max_value=20.0,
+            value=1.0,
+            step=0.5,
+            help="Only suggest orders for items that sell at least this much per month"
+        )
     
-    df["Target_Stock"] = (df["Monthly_Avg"] * cover_months).round(0)
-    df["Suggested_Order"] = (df["Target_Stock"] - df["Current_Stock"]).clip(lower=0).astype(int)
+    with col_c:
+        safety_days = st.number_input(
+            "Minimum Days of Cover before ordering",
+            min_value=7,
+            max_value=45,
+            value=20,
+            help="Only recommend an order if current stock will last fewer than this many days"
+        )
     
-    lpo = df[
-        (df["Suggested_Order"] > 0) &
-        (df["Monthly_Avg"] >= min_sales)
-    ].copy()
+    # Calculate Days of Cover
+    df["Days_of_Cover"] = np.where(
+        df["Monthly_Avg"] > 0,
+        (df["Current_Stock"] / df["Monthly_Avg"] * 30).round(1),
+        999
+    )
     
+    # Target stock based on selected months
+    df["Target_Stock"] = (df["Monthly_Avg"] * target_months).round(0)
+    
+    # Only suggest order if:
+    # 1. Current stock is below target
+    # 2. Days of cover is below the safety threshold
+    # 3. Item has meaningful sales
+    df["Suggested_Order"] = np.where(
+        (df["Current_Stock"] < df["Target_Stock"]) &
+        (df["Days_of_Cover"] < safety_days) &
+        (df["Monthly_Avg"] >= min_sales),
+        (df["Target_Stock"] - df["Current_Stock"]).clip(lower=0).astype(int),
+        0
+    )
+    
+    lpo = df[df["Suggested_Order"] > 0].copy()
     lpo = lpo.sort_values(["Branch", "Suggested_Order"], ascending=[True, False])
     
-    st.success(f"**{len(lpo)}** order lines generated across **{lpo['Branch'].nunique()}** branches")
+    if len(lpo) == 0:
+        st.success("No orders needed right now. Most branches have sufficient stock based on current settings.")
+    else:
+        st.success(f"**{len(lpo)}** order lines generated across **{lpo['Branch'].nunique()}** branches")
     
+    # Summary
     st.markdown("### Summary by Branch")
-    branch_summary = lpo.groupby("Branch").agg(
-        Items_to_Order=("Suggested_Order", "count"),
-        Total_Units=("Suggested_Order", "sum")
-    ).sort_values("Total_Units", ascending=False).reset_index()
-    st.dataframe(branch_summary, use_container_width=True)
+    if len(lpo) > 0:
+        branch_summary = lpo.groupby("Branch").agg(
+            Items_to_Order=("Suggested_Order", "count"),
+            Total_Units=("Suggested_Order", "sum")
+        ).sort_values("Total_Units", ascending=False).reset_index()
+        st.dataframe(branch_summary, use_container_width=True)
+    else:
+        st.info("No branches currently need replenishment.")
     
     st.markdown("### Detailed LPO Suggestions")
-    display_cols = ["Branch", "Brand", "ItemGroup1", "Model No", "Current_Stock", "Monthly_Avg", "Target_Stock", "Suggested_Order"]
-    st.dataframe(lpo[display_cols], use_container_width=True, height=450)
+    display_cols = [
+        "Branch", "Brand", "ItemGroup1", "Model No",
+        "Current_Stock", "Monthly_Avg", "Days_of_Cover",
+        "Target_Stock", "Suggested_Order"
+    ]
     
+    if len(lpo) > 0:
+        st.dataframe(
+            lpo[display_cols].style.format({
+                "Monthly_Avg": "{:.2f}",
+                "Days_of_Cover": "{:.1f}"
+            }),
+            use_container_width=True,
+            height=450
+        )
+    else:
+        st.write("No items require ordering with the current settings.")
+    
+    # Download
     output = BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        lpo[display_cols].to_excel(writer, sheet_name="LPO_Details", index=False)
-        branch_summary.to_excel(writer, sheet_name="Branch_Summary", index=False)
+        if len(lpo) > 0:
+            lpo[display_cols].to_excel(writer, sheet_name="LPO_Details", index=False)
+            branch_summary.to_excel(writer, sheet_name="Branch_Summary", index=False)
+        else:
+            pd.DataFrame({"Message": ["No orders recommended"]}).to_excel(writer, sheet_name="LPO_Details", index=False)
     
     st.download_button(
         "⬇️ Download Smart LPO Report",
