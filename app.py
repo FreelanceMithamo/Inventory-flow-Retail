@@ -14,40 +14,57 @@ st.set_page_config(
 )
 
 # -------------------------------------------------
-# CSS
+# CSS - Fixed visibility for labels
 # -------------------------------------------------
 st.markdown("""
 <style>
+    /* ========== BACKGROUND - Modern Appliance Showroom ========== */
     .stApp {
-        background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
+        background: 
+            linear-gradient(rgba(15, 23, 42, 0.72), rgba(15, 23, 42, 0.78)),
+            url('https://images.unsplash.com/photo-1556740738-b6a03c8b2b6b?ixlib=rb-4.0.3&auto=format&fit=crop&w=1920&q=80');
+        background-size: cover;
+        background-position: center;
+        background-attachment: fixed;
+        background-repeat: no-repeat;
     }
+    
+    /* Make content readable on dark background */
+    .stApp > header {
+        background: transparent;
+    }
+    
     #MainMenu, footer, header {visibility: hidden;}
     
+    /* Login Card */
     .login-card {
-        background: white;
+        background: rgba(255, 255, 255, 0.95);
         border-radius: 20px;
         padding: 2.5rem 2.8rem;
-        box-shadow: 0 25px 50px -12px rgba(220, 38, 38, 0.18);
+        box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.35);
         border-top: 6px solid #dc2626;
         max-width: 420px;
         margin: 0 auto;
+        backdrop-filter: blur(8px);
     }
     
+    /* Module cards */
     .module-card {
-        background: white;
+        background: rgba(255, 255, 255, 0.94);
         border-radius: 18px;
         padding: 1.9rem 1.5rem;
-        box-shadow: 0 10px 15px -3px rgba(0,0,0,0.07);
-        border: 1px solid #e5e7eb;
+        box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.2);
+        border: 1px solid rgba(255,255,255,0.3);
         transition: all 0.28s ease;
         height: 100%;
         text-align: center;
+        backdrop-filter: blur(6px);
     }
     .module-card:hover {
         transform: translateY(-8px);
-        box-shadow: 0 25px 30px -5px rgba(220, 38, 38, 0.18);
+        box-shadow: 0 25px 35px -5px rgba(220, 38, 38, 0.25);
         border-color: #f87171;
-        background: #fff5f5;
+        background: rgba(255, 245, 245, 0.97);
     }
     
     .logo-circle {
@@ -59,16 +76,13 @@ st.markdown("""
         justify-content: center;
         font-size: 1.9rem;
         margin: 0 auto 1.1rem auto;
-        transition: all 0.28s ease;
-    }
-    .module-card:hover .logo-circle {
-        transform: scale(1.08);
     }
     
     .transfer { background: #fee2e2; color: #dc2626; }
     .health   { background: #dcfce7; color: #16a34a; }
     .lpo      { background: #ffedd5; color: #ea580c; }
     
+    /* Buttons */
     .stButton > button {
         background: #dc2626 !important;
         color: white !important;
@@ -78,13 +92,19 @@ st.markdown("""
     }
     .stButton > button:hover {
         background: #b91c1c !important;
-        box-shadow: 0 6px 14px rgba(220, 38, 38, 0.35);
+        box-shadow: 0 6px 14px rgba(220, 38, 38, 0.4);
     }
     
-    /* Better input visibility */
+    /* Force dark text for visibility */
+    label, .stTextInput label, .stMarkdown, .stMarkdown p, 
+    .stMarkdown h1, .stMarkdown h2, .stMarkdown h3, .stMarkdown h4 {
+        color: #1f2937 !important;
+    }
+    
+    /* Input fields */
     .stTextInput > div > div > input {
         background-color: #ffffff !important;
-        color: #1f2937 !important;
+        color: #111827 !important;
         border: 1.5px solid #d1d5db !important;
         border-radius: 8px !important;
     }
@@ -102,10 +122,9 @@ st.markdown("""
         font-weight: 600;
     }
     
-    /* Narrow account section */
-    .account-container {
-        max-width: 520px;
-        margin: 0 auto;
+    /* Make the main content area slightly transparent so background shows */
+    .block-container {
+        background: transparent !important;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -233,10 +252,9 @@ def home_page():
     
     st.markdown("<br>", unsafe_allow_html=True)
     
-    # ---------- Account & Users (narrower) ----------
+    # ---------- Account & Users (narrow + dark labels) ----------
     st.markdown("### Account & Users")
     
-    # Center and limit width
     left, center, right = st.columns([1, 2.2, 1])
     
     with center:
@@ -280,7 +298,7 @@ def home_page():
                     """, unsafe_allow_html=True)
 
 # -------------------------------------------------
-# Transfer Hub + placeholders (unchanged logic)
+# Transfer Hub (same logic)
 # -------------------------------------------------
 def transfer_hub():
     col1, col2 = st.columns([5, 1])
