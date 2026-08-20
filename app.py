@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 from io import BytesIO
 from datetime import datetime
+import re
 import warnings
 warnings.filterwarnings("ignore")
 
@@ -26,10 +27,10 @@ st.markdown("""
     .login-card {
         background: white;
         border-radius: 20px;
-        padding: 2.5rem 2.8rem;
+        padding: 2.2rem 2.5rem;
         box-shadow: 0 25px 50px -12px rgba(220, 38, 38, 0.18);
         border-top: 6px solid #dc2626;
-        max-width: 420px;
+        max-width: 440px;
         margin: 0 auto;
     }
    
@@ -104,7 +105,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # -------------------------------------------------
-# Auth
+# Auth State
 # -------------------------------------------------
 if "users" not in st.session_state:
     st.session_state.users = {
@@ -113,6 +114,9 @@ if "users" not in st.session_state:
         "manager": "branch123"
     }
 
+if "pending_resets" not in st.session_state:
+    st.session_state.pending_resets = []
+
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
 if "username" not in st.session_state:
@@ -120,42 +124,88 @@ if "username" not in st.session_state:
 if "module" not in st.session_state:
     st.session_state.module = None
 
+def is_strong_password(pw: str) -> bool:
+    if len(pw) < 6:
+        return False
+    has_letter = bool(re.search(r"[a-zA-Z]", pw))
+    has_number = bool(re.search(r"[0-9]", pw))
+    return has_letter and has_number
+
+# -------------------------------------------------
+# Login Page
+# -------------------------------------------------
 def login_page():
     st.markdown("<br><br>", unsafe_allow_html=True)
-    col1, col2, col3 = st.columns([1, 1.3, 1])
+    col1, col2, col3 = st.columns([1, 1.4, 1])
    
     with col2:
         st.markdown("""
-        <div style="text-align:center; margin-bottom: 1.8rem;">
-            <div style="font-size: 3.8rem;">📦</div>
-            <h1 style="margin:0; font-size: 2.6rem; font-weight: 800; color: #dc2626;">StockFlow</h1>
-            <p style="color: #6b7280; font-size: 1.15rem;">Retail Inventory Intelligence Platform</p>
+        <div style="text-align:center; margin-bottom: 1.5rem;">
+            <div style="font-size: 3.5rem;">📦</div>
+            <h1 style="margin:0; font-size: 2.5rem; font-weight: 800; color: #dc2626;">StockFlow</h1>
+            <p style="color: #6b7280; font-size: 1.1rem;">Retail Inventory Intelligence Platform</p>
         </div>
         """, unsafe_allow_html=True)
        
-        st.markdown('<div class="login-card">', unsafe_allow_html=True)
-        st.markdown("### Sign in to your account")
-       
-        with st.form("login_form"):
-            username = st.text_input("Username", placeholder="Enter username")
-            password = st.text_input("Password", type="password", placeholder="Enter password")
-            st.markdown("<br>", unsafe_allow_html=True)
-            if st.form_submit_button("Sign In", use_container_width=True):
-                if username in st.session_state.users and st.session_state.users[username] == password:
-                    st.session_state.authenticated = True
-                    st.session_state.username = username
-                    st.rerun()
-                else:
-                    st.error("Invalid username or password")
-        st.markdown('</div>', unsafe_allow_html=True)
-       
-        st.markdown("""
-        <div style="text-align:center; margin-top: 2rem; color: #9ca3af; font-size: 0.9rem;">
-            Demo accounts:<br>
-            <b>admin</b> / stockflow2025 &nbsp;|&nbsp; <b>demo</b> / demo123
-        </div>
-        """, unsafe_allow_html=True)
+        tab_login, tab_create, tab_forgot = st.tabs(["Sign In", "Create Account", "Forgot Password"])
+        
+        with tab_login:
+            st.markdown('<div class="login-card">', unsafe_allow_html=True)
+            with st.form("login_form"):
+                username = st.text_input("Username")
+                password = st.text_input("Password", type="password")
+                if st.form_submit_button("Sign In", use_container_width=True):
+                    if username in st.session_state.users and st.session_state.users[username] == password:
+                        st.session_state.authenticated = True
+                        st.session_state.username = username
+                        st.rerun()
+                    else:
+                        st.error("Invalid username or password")
+            st.markdown('</div>', unsafe_allow_html=True)
+        
+        with tab_create:
+            st.markdown('<div class="login-card">', unsafe_allow_html=True)
+            st.markdown("##### Create a new account")
+            with st.form("create_form"):
+                new_user = st.text_input("Choose Username")
+                new_pw = st.text_input("Password", type="password",
+                                      help="Must contain letters and numbers (min 6 characters)")
+                confirm_pw = st.text_input("Confirm Password", type="password")
+                
+                if st.form_submit_button("Create Account", use_container_width=True):
+                    if not new_user or not new_pw:
+                        st.error("Please fill all fields")
+                    elif new_user in st.session_state.users:
+                        st.error("Username already exists")
+                    elif new_pw != confirm_pw:
+                        st.error("Passwords do not match")
+                    elif not is_strong_password(new_pw):
+                        st.error("Password must contain both letters and numbers (min 6 characters)")
+                    else:
+                        st.session_state.users[new_user] = new_pw
+                        st.success("Account created successfully! You can now sign in.")
+            st.markdown('</div>', unsafe_allow_html=True)
+        
+        with tab_forgot:
+            st.markdown('<div class="login-card">', unsafe_allow_html=True)
+            st.markdown("##### Forgot Password")
+            st.caption("A request will be sent to the Admin. No automatic email is sent.")
+            
+            with st.form("forgot_form"):
+                forgot_user = st.text_input("Enter your Username")
+                if st.form_submit_button("Request Password Reset", use_container_width=True):
+                    if forgot_user not in st.session_state.users:
+                        st.error("Username not found")
+                    elif forgot_user in st.session_state.pending_resets:
+                        st.warning("A reset request for this user is already pending.")
+                    else:
+                        st.session_state.pending_resets.append(forgot_user)
+                        st.success("Request sent to Admin. Please wait for the Admin to reset your password.")
+            st.markdown('</div>', unsafe_allow_html=True)
 
+# -------------------------------------------------
+# Home Page
+# -------------------------------------------------
 def home_page():
     col_left, col_right = st.columns([5, 1])
     with col_left:
@@ -226,34 +276,47 @@ def home_page():
     st.markdown("<br>", unsafe_allow_html=True)
    
     st.markdown("### Account & Users")
-    left, center, right = st.columns([1, 2.2, 1])
+    left, center, right = st.columns([1, 2.4, 1])
    
     with center:
-        tab1, tab2 = st.tabs(["👤 My Account", "👥 Users"])
+        tab1, tab2, tab3 = st.tabs(["👤 My Account", "👥 Users", "🔑 Admin Resets"])
        
         with tab1:
-            st.markdown("#### Change Password")
-            with st.form("change_password"):
+            st.markdown("#### Update Username or Password")
+            with st.form("update_account"):
+                st.write(f"Current username: **{st.session_state.username}**")
+                
+                new_username = st.text_input("New Username (leave blank to keep current)")
                 current_pw = st.text_input("Current Password", type="password")
-                new_pw = st.text_input("New Password", type="password")
+                new_pw = st.text_input("New Password (leave blank to keep current)", type="password")
                 confirm_pw = st.text_input("Confirm New Password", type="password")
-               
-                if st.form_submit_button("Update Password", use_container_width=True):
+                
+                if st.form_submit_button("Save Changes", use_container_width=True):
                     user = st.session_state.username
+                    
                     if st.session_state.users.get(user) != current_pw:
                         st.error("Current password is incorrect")
-                    elif new_pw != confirm_pw:
-                        st.error("New passwords do not match")
-                    elif len(new_pw) < 6:
-                        st.error("Password must be at least 6 characters")
                     else:
-                        st.session_state.users[user] = new_pw
-                        st.success("Password updated successfully!")
-       
+                        if new_pw:
+                            if new_pw != confirm_pw:
+                                st.error("New passwords do not match")
+                            elif not is_strong_password(new_pw):
+                                st.error("Password must contain letters and numbers (min 6 characters)")
+                            else:
+                                st.session_state.users[user] = new_pw
+                                st.success("Password updated successfully!")
+                        
+                        if new_username and new_username != user:
+                            if new_username in st.session_state.users:
+                                st.error("That username is already taken")
+                            else:
+                                st.session_state.users[new_username] = st.session_state.users.pop(user)
+                                st.session_state.username = new_username
+                                st.success(f"Username changed to **{new_username}**")
+                                st.rerun()
+        
         with tab2:
             st.markdown("#### Registered Users")
-            st.caption("Currently logged in user is highlighted")
-           
             for user in st.session_state.users.keys():
                 if user == st.session_state.username:
                     st.markdown(f"""
@@ -267,9 +330,30 @@ def home_page():
                         <b>{user}</b>
                     </div>
                     """, unsafe_allow_html=True)
+        
+        with tab3:
+            if st.session_state.username != "admin":
+                st.warning("Only the Admin can manage password reset requests.")
+            else:
+                st.markdown("#### Pending Password Reset Requests")
+                
+                if not st.session_state.pending_resets:
+                    st.info("No pending reset requests.")
+                else:
+                    for user in st.session_state.pending_resets[:]:
+                        col_a, col_b = st.columns([3, 1])
+                        with col_a:
+                            st.write(f"**{user}** requested a password reset")
+                        with col_b:
+                            if st.button("Reset", key=f"reset_{user}"):
+                                temp_pw = "Temp1234"
+                                st.session_state.users[user] = temp_pw
+                                st.session_state.pending_resets.remove(user)
+                                st.success(f"Password for **{user}** set to: `{temp_pw}`")
+                                st.rerun()
 
 # -------------------------------------------------
-# Shared helper
+# Shared Data Loader
 # -------------------------------------------------
 def load_and_prepare(uploaded):
     xlsx = pd.ExcelFile(uploaded)
@@ -431,10 +515,13 @@ def transfer_hub():
         output = BytesIO()
         with pd.ExcelWriter(output, engine="openpyxl") as writer:
             report.to_excel(writer, sheet_name="transfers", index=False)
-        st.download_button("⬇️ Download Transfer Report", data=output.getvalue(),
-                           file_name=f"Inter_Branch_Transfers_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
-                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                           use_container_width=True)
+        st.download_button(
+            "⬇️ Download Transfer Report",
+            data=output.getvalue(),
+            file_name=f"Inter_Branch_Transfers_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True
+        )
 
 # -------------------------------------------------
 # MODULE 2: Stock Health
@@ -462,23 +549,14 @@ def stock_health():
         st.error(error)
         return
     
-    # Classifications
     df["Status"] = "Healthy"
-    
-    # Stockout
     df.loc[df["Current_Stock"] <= 0, "Status"] = "Stockout"
-    
-    # Dead stock = has stock but zero sales in the whole period
     df.loc[(df["Current_Stock"] > 0) & (df["Total_Sold"] == 0), "Status"] = "Dead Stock"
     
-    # Overstock = high stock relative to sales (more than ~4 months cover)
     df["Months_Cover"] = np.where(df["Monthly_Avg"] > 0, df["Current_Stock"] / df["Monthly_Avg"], 999)
     df.loc[(df["Status"] == "Healthy") & (df["Months_Cover"] > 4) & (df["Current_Stock"] > 5), "Status"] = "Overstock"
-    
-    # Slow-moving
     df.loc[(df["Status"] == "Healthy") & (df["Months_Cover"] > 2.5) & (df["Current_Stock"] > 3), "Status"] = "Slow-moving"
     
-    # KPIs
     st.markdown("### Key Metrics")
     k1, k2, k3, k4, k5 = st.columns(5)
     k1.metric("Total SKU-Branch", f"{len(df):,}")
@@ -500,7 +578,7 @@ def stock_health():
     
     with tab2:
         dead = df[df["Status"] == "Dead Stock"].sort_values("Current_Stock", ascending=False)
-        st.write(f"**{len(dead)}** items • These have stock but zero sales in the period")
+        st.write(f"**{len(dead)}** items • These have stock but zero sales")
         st.dataframe(dead[display_cols], use_container_width=True, height=400)
     
     with tab3:
@@ -513,7 +591,6 @@ def stock_health():
         st.write(f"**{len(slow)}** items")
         st.dataframe(slow[display_cols], use_container_width=True, height=400)
     
-    # Download full health report
     output = BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         df[display_cols].to_excel(writer, sheet_name="Full_Health", index=False)
@@ -556,18 +633,15 @@ def smart_lpo():
         st.error(error)
         return
     
-    # Settings
     col_a, col_b = st.columns(2)
     with col_a:
         cover_months = st.slider("Target cover (months)", 1.0, 4.0, 2.0, 0.5)
     with col_b:
         min_sales = st.number_input("Minimum monthly sales to consider", 0.0, 10.0, 0.5, 0.5)
     
-    # Calculate suggested order
     df["Target_Stock"] = (df["Monthly_Avg"] * cover_months).round(0)
     df["Suggested_Order"] = (df["Target_Stock"] - df["Current_Stock"]).clip(lower=0).astype(int)
     
-    # Only suggest where there is real demand
     lpo = df[
         (df["Suggested_Order"] > 0) &
         (df["Monthly_Avg"] >= min_sales)
@@ -577,7 +651,6 @@ def smart_lpo():
     
     st.success(f"**{len(lpo)}** order lines generated across **{lpo['Branch'].nunique()}** branches")
     
-    # Summary by branch
     st.markdown("### Summary by Branch")
     branch_summary = lpo.groupby("Branch").agg(
         Items_to_Order=("Suggested_Order", "count"),
@@ -589,7 +662,6 @@ def smart_lpo():
     display_cols = ["Branch", "Brand", "ItemGroup1", "Model No", "Current_Stock", "Monthly_Avg", "Target_Stock", "Suggested_Order"]
     st.dataframe(lpo[display_cols], use_container_width=True, height=450)
     
-    # Download
     output = BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         lpo[display_cols].to_excel(writer, sheet_name="LPO_Details", index=False)
