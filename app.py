@@ -423,64 +423,150 @@ def home_page():
 # -------------------------------------------------
 # Shared Data Loader
 # -------------------------------------------------
+def _is_mda_sda(group_value):
+    """Kept for future use; does not affect current ordering logic."""
+    if pd.isna(group_value):
+        return False
+    text = re.sub(r"\s+", " ", str(group_value).strip().lower())
+    return bool(re.search(r"\b(?:mda|sda)\b", text))
+
+
 def load_and_prepare(uploaded):
     xlsx = pd.ExcelFile(uploaded)
     sales_sheet = next((s for s in xlsx.sheet_names if "sales" in s.lower()), None)
     stock_sheet = next((s for s in xlsx.sheet_names if "stock" in s.lower()), None)
-    
+
     if not sales_sheet or not stock_sheet:
         return None, "Could not find both Sales and Stocks sheets."
-    
+
     df_sales = pd.read_excel(xlsx, sheet_name=sales_sheet)
     df_stock = pd.read_excel(xlsx, sheet_name=stock_sheet)
-    
+
     def make_key(df):
         brand = next((c for c in df.columns if "brand" in str(c).lower()), None)
         group = next((c for c in df.columns if "group" in str(c).lower()), None)
         model = next((c for c in df.columns if "model" in str(c).lower()), None)
+
         parts = []
-        if brand: parts.append(df[brand].astype(str).str.strip())
-        if group: parts.append(df[group].astype(str).str.strip())
-        if model: parts.append(df[model].astype(str).str.strip())
+        if brand:
+            parts.append(df[brand].astype(str).str.strip())
+        if group:
+            parts.append(df[group].astype(str).str.strip())
+        if model:
+            parts.append(df[model].astype(str).str.strip())
+
+        if not parts:
+            raise ValueError("Could not identify Brand, Group or Model columns.")
+
         key = parts[0]
         for p in parts[1:]:
             key = key + " | " + p
+
         return key, brand, group, model
-    
+
     df_s = df_sales.copy()
     df_s["Product_Key"], brand_col, group_col, model_col = make_key(df_s)
+
     fixed = ["Product_Key"]
-    if brand_col: fixed.append(brand_col)
-    if group_col: fixed.append(group_col)
-    if model_col: fixed.append(model_col)
-    branches = [c for c in df_s.columns if c not in fixed and "total" not in str(c).lower() and not str(c).startswith("Unnamed")]
-    sales_long = df_s.melt(id_vars=fixed, value_vars=branches, var_name="Branch", value_name="Qty_Sold")
-    sales_long["Qty_Sold"] = pd.to_numeric(sales_long["Qty_Sold"], errors="coerce").fillna(0)
-    sales_long["Branch"] = sales_long["Branch"].astype(str).str.strip()
-    sales_agg = sales_long.groupby(["Product_Key", "Branch"], as_index=False).agg(
-        Total_Sold=("Qty_Sold", "sum"),
-        **{c: (c, "first") for c in [brand_col, group_col, model_col] if c}
+    if brand_col:
+        fixed.append(brand_col)
+    if group_col:
+        fixed.append(group_col)
+    if model_col:
+        fixed.append(model_col)
+
+    branches = [
+        c for c in df_s.columns
+        if c not in fixed
+        and "total" not in str(c).lower()
+        and not str(c).startswith("Unnamed")
+    ]
+
+    sales_long = df_s.melt(
+        id_vars=fixed,
+        value_vars=branches,
+        var_name="Branch",
+        value_name="Qty_Sold"
     )
-    sales_agg["Monthly_Avg"] = (sales_agg["Total_Sold"] / 8).round(2)
-    
+
+    sales_long["Qty_Sold"] = pd.to_numeric(
+        sales_long["Qty_Sold"], errors="coerce"
+    ).fillna(0)
+
+    sales_long["Branch"] = sales_long["Branch"].astype(str).str.strip()
+
+    sales_agg = sales_long.groupby(
+        ["Product_Key", "Branch"], as_index=False
+    ).agg(
+        Total_Sold=("Qty_Sold", "sum"),
+        **{
+            c: (c, "first")
+            for c in [brand_col, group_col, model_col]
+            if c
+        }
+    )
+
+    # The existing input sales sheet represents the cumulative sales period
+    # used by StockFlow. Preserve the current 8-month average approach.
+    sales_agg["Monthly_Avg"] = (
+        sales_agg["Total_Sold"] / 8
+    ).round(2)
+
     df_st = df_stock.copy()
     df_st["Product_Key"], _, _, _ = make_key(df_st)
+
     fixed2 = ["Product_Key"]
-    branches2 = [c for c in df_st.columns if c not in fixed2 and "total" not in str(c).lower() and not str(c).startswith("Unnamed")]
-    stock_long = df_st.melt(id_vars=fixed2, value_vars=branches2, var_name="Branch", value_name="Current_Stock")
-    stock_long["Current_Stock"] = pd.to_numeric(stock_long["Current_Stock"], errors="coerce").fillna(0)
+
+    branches2 = [
+        c for c in df_st.columns
+        if c not in fixed2
+        and "total" not in str(c).lower()
+        and not str(c).startswith("Unnamed")
+    ]
+
+    stock_long = df_st.melt(
+        id_vars=fixed2,
+        value_vars=branches2,
+        var_name="Branch",
+        value_name="Current_Stock"
+    )
+
+    stock_long["Current_Stock"] = pd.to_numeric(
+        stock_long["Current_Stock"], errors="coerce"
+    ).fillna(0)
+
     stock_long["Branch"] = stock_long["Branch"].astype(str).str.strip()
-    stock_agg = stock_long.groupby(["Product_Key", "Branch"], as_index=False)["Current_Stock"].sum()
-    
-    df = pd.merge(stock_agg, sales_agg, on=["Product_Key", "Branch"], how="outer")
+
+    stock_agg = stock_long.groupby(
+        ["Product_Key", "Branch"], as_index=False
+    )["Current_Stock"].sum()
+
+    df = pd.merge(
+        stock_agg,
+        sales_agg,
+        on=["Product_Key", "Branch"],
+        how="outer"
+    )
+
     df["Current_Stock"] = df["Current_Stock"].fillna(0)
     df["Total_Sold"] = df["Total_Sold"].fillna(0)
     df["Monthly_Avg"] = df["Monthly_Avg"].fillna(0)
-    
-    if brand_col: df = df.rename(columns={brand_col: "Brand"})
-    if group_col: df = df.rename(columns={group_col: "ItemGroup1"})
-    if model_col: df = df.rename(columns={model_col: "Model No"})
-    
+
+    if brand_col:
+        df = df.rename(columns={brand_col: "Brand"})
+    else:
+        df["Brand"] = ""
+
+    if group_col:
+        df = df.rename(columns={group_col: "ItemGroup1"})
+    else:
+        df["ItemGroup1"] = ""
+
+    if model_col:
+        df = df.rename(columns={model_col: "Model No"})
+    else:
+        df["Model No"] = ""
+
     return df, None
 
 # -------------------------------------------------
@@ -680,39 +766,44 @@ def smart_lpo():
     col1, col2 = st.columns([5, 1])
     with col1:
         st.markdown("## 📄📋 Smart LPO Generator")
-        st.caption("Conservative ordering logic for bi-monthly replenishment")
+        st.caption(
+            "Cumulative-average replenishment with separate MIKA LPO and non-MIKA Goods issue"
+        )
     with col2:
         if st.button("← Back", use_container_width=True, key="lpo_back"):
             st.session_state.module = None
             st.rerun()
-    
+
     st.markdown("---")
-    
-    uploaded = st.file_uploader("Upload Excel file (Sales + Stocks sheets)", type=["xlsx", "xls"], key="lpo_upload")
-    
+
+    uploaded = st.file_uploader(
+        "Upload Excel file (Sales + Stocks sheets)",
+        type=["xlsx", "xls"],
+        key="lpo_upload"
+    )
+
     if uploaded is None:
         st.info("Upload your Sales + Stocks Excel file to generate LPO suggestions.")
         return
-    
+
     df, error = load_and_prepare(uploaded)
     if error:
         st.error(error)
         return
-    
+
     st.markdown("### Ordering Settings")
     col_a, col_b, col_c = st.columns(3)
-    
+
     with col_a:
-        # Much more conservative default
         target_months = st.slider(
             "Target Months of Cover",
             min_value=0.5,
             max_value=2.0,
-            value=1.0,          # ← Default now 1 month (was 2)
+            value=1.0,
             step=0.1,
-            help="Since you order twice a month, 0.8 – 1.2 months is usually enough"
+            help="Normal replenishment target based on cumulative average monthly sales."
         )
-    
+
     with col_b:
         min_sales = st.number_input(
             "Minimum Monthly Sales",
@@ -720,32 +811,32 @@ def smart_lpo():
             max_value=20.0,
             value=1.0,
             step=0.5,
-            help="Only suggest orders for items that sell at least this much per month"
+            help="Only suggest orders for items whose cumulative monthly average meets this threshold."
         )
-    
+
     with col_c:
         safety_days = st.number_input(
             "Minimum Days of Cover before ordering",
             min_value=7,
             max_value=45,
             value=20,
-            help="Only recommend an order if current stock will last fewer than this many days"
+            help="Recommend an order when stock cover falls below this level."
         )
-    
-    # Calculate Days of Cover
+
+    # -------------------------------------------------
+    # Replenishment calculations
+    # -------------------------------------------------
     df["Days_of_Cover"] = np.where(
         df["Monthly_Avg"] > 0,
         (df["Current_Stock"] / df["Monthly_Avg"] * 30).round(1),
         999
     )
-    
-    # Target stock based on selected months
-    df["Target_Stock"] = (df["Monthly_Avg"] * target_months).round(0)
-    
-    # Only suggest order if:
-    # 1. Current stock is below target
-    # 2. Days of cover is below the safety threshold
-    # 3. Item has meaningful sales
+
+    # CEIL ensures low-volume products still receive a practical target.
+    df["Target_Stock"] = np.ceil(
+        df["Monthly_Avg"] * target_months
+    ).astype(int)
+
     df["Suggested_Order"] = np.where(
         (df["Current_Stock"] < df["Target_Stock"]) &
         (df["Days_of_Cover"] < safety_days) &
@@ -753,56 +844,218 @@ def smart_lpo():
         (df["Target_Stock"] - df["Current_Stock"]).clip(lower=0).astype(int),
         0
     )
-    
+
+    df["Order_Reason"] = np.where(
+        df["Suggested_Order"] > 0,
+        "Cumulative-average replenishment",
+        ""
+    )
+
     lpo = df[df["Suggested_Order"] > 0].copy()
-    lpo = lpo.sort_values(["Branch", "Suggested_Order"], ascending=[True, False])
-    
+
+    lpo = lpo.sort_values(
+        ["Branch", "Suggested_Order", "Monthly_Avg"],
+        ascending=[True, False, False]
+    )
+
+    # MIKA stays in the LPO sheet.
+    mika_lpo = lpo[
+        lpo["Brand"].astype(str).str.strip().str.upper().eq("MIKA")
+    ].copy()
+
+    # Every other brand goes into Goods issue.
+    goods_issue = lpo[
+        ~lpo["Brand"].astype(str).str.strip().str.upper().eq("MIKA")
+    ].copy()
+
     if len(lpo) == 0:
-        st.success("No orders needed right now. Most branches have sufficient stock based on current settings.")
-    else:
-        st.success(f"**{len(lpo)}** order lines generated across **{lpo['Branch'].nunique()}** branches")
-    
-    # Summary
-    st.markdown("### Summary by Branch")
-    if len(lpo) > 0:
-        branch_summary = lpo.groupby("Branch").agg(
-            Items_to_Order=("Suggested_Order", "count"),
-            Total_Units=("Suggested_Order", "sum")
-        ).sort_values("Total_Units", ascending=False).reset_index()
-        st.dataframe(branch_summary, use_container_width=True)
-    else:
-        st.info("No branches currently need replenishment.")
-    
-    st.markdown("### Detailed LPO Suggestions")
-    display_cols = [
-        "Branch", "Brand", "ItemGroup1", "Model No",
-        "Current_Stock", "Monthly_Avg", "Days_of_Cover",
-        "Target_Stock", "Suggested_Order"
-    ]
-    
-    if len(lpo) > 0:
-        st.dataframe(
-            lpo[display_cols].style.format({
-                "Monthly_Avg": "{:.2f}",
-                "Days_of_Cover": "{:.1f}"
-            }),
-            use_container_width=True,
-            height=450
+        st.success(
+            "No orders needed right now. Most branches have sufficient stock based on the current settings."
         )
     else:
-        st.write("No items require ordering with the current settings.")
-    
-    # Download
-    output = BytesIO()
-    with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        if len(lpo) > 0:
-            lpo[display_cols].to_excel(writer, sheet_name="LPO_Details", index=False)
-            branch_summary.to_excel(writer, sheet_name="Branch_Summary", index=False)
+        st.success(
+            f"**{len(lpo)}** order lines generated across **{lpo['Branch'].nunique()}** branches"
+        )
+
+    # -------------------------------------------------
+    # Summary
+    # -------------------------------------------------
+    st.markdown("### Summary by Branch")
+
+    if len(lpo) > 0:
+        branch_summary = (
+            lpo.groupby("Branch")
+            .agg(
+                Items_to_Order=("Suggested_Order", "count"),
+                Total_Units=("Suggested_Order", "sum")
+            )
+            .sort_values("Total_Units", ascending=False)
+            .reset_index()
+        )
+
+        st.dataframe(
+            branch_summary,
+            use_container_width=True
+        )
+    else:
+        branch_summary = pd.DataFrame(
+            columns=["Branch", "Items_to_Order", "Total_Units"]
+        )
+        st.info("No branches currently need replenishment.")
+
+    # -------------------------------------------------
+    # Detailed suggestions
+    # -------------------------------------------------
+    st.markdown("### Detailed Order Suggestions")
+
+    display_cols = [
+        "Branch",
+        "Brand",
+        "ItemGroup1",
+        "Model No",
+        "Current_Stock",
+        "Monthly_Avg",
+        "Days_of_Cover",
+        "Target_Stock",
+        "Suggested_Order",
+        "Order_Reason"
+    ]
+
+    tab_mika, tab_goods = st.tabs([
+        f"📄 LPO — MIKA ({len(mika_lpo)})",
+        f"📦 Goods issue — Other Brands ({len(goods_issue)})"
+    ])
+
+    with tab_mika:
+        if len(mika_lpo) > 0:
+            st.dataframe(
+                mika_lpo[display_cols].style.format({
+                    "Monthly_Avg": "{:.2f}",
+                    "Days_of_Cover": "{:.1f}"
+                }),
+                use_container_width=True,
+                height=450
+            )
         else:
-            pd.DataFrame({"Message": ["No orders recommended"]}).to_excel(writer, sheet_name="LPO_Details", index=False)
-    
+            st.info("No MIKA items require ordering.")
+
+    with tab_goods:
+        if len(goods_issue) > 0:
+            st.dataframe(
+                goods_issue[display_cols].style.format({
+                    "Monthly_Avg": "{:.2f}",
+                    "Days_of_Cover": "{:.1f}"
+                }),
+                use_container_width=True,
+                height=450
+            )
+        else:
+            st.info("No non-MIKA items require a Goods issue.")
+
+    # -------------------------------------------------
+    # Excel download
+    #
+    # LPO          = MIKA only
+    # Goods issue  = all non-MIKA
+    # Branch_Summary = combined summary
+    # -------------------------------------------------
+    output = BytesIO()
+
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        export_cols = [
+            "Branch",
+            "Brand",
+            "ItemGroup1",
+            "Model No",
+            "Current_Stock",
+            "Monthly_Avg",
+            "Days_of_Cover",
+            "Target_Stock",
+            "Suggested_Order",
+            "Order_Reason"
+        ]
+
+        if len(mika_lpo) > 0:
+            mika_lpo[export_cols].to_excel(
+                writer,
+                sheet_name="LPO",
+                index=False
+            )
+        else:
+            pd.DataFrame({
+                "Message": ["No MIKA orders recommended"]
+            }).to_excel(
+                writer,
+                sheet_name="LPO",
+                index=False
+            )
+
+        if len(goods_issue) > 0:
+            goods_issue[export_cols].to_excel(
+                writer,
+                sheet_name="Goods issue",
+                index=False
+            )
+        else:
+            pd.DataFrame({
+                "Message": ["No non-MIKA orders recommended"]
+            }).to_excel(
+                writer,
+                sheet_name="Goods issue",
+                index=False
+            )
+
+        branch_summary.to_excel(
+            writer,
+            sheet_name="Branch_Summary",
+            index=False
+        )
+
+    # Simple workbook formatting.
+    try:
+        from openpyxl import load_workbook
+        from openpyxl.styles import Font, PatternFill, Alignment
+        from openpyxl.utils import get_column_letter
+
+        output.seek(0)
+        wb = load_workbook(output)
+
+        header_fill = PatternFill("solid", fgColor="1F4E78")
+        header_font = Font(color="FFFFFF", bold=True)
+
+        for ws in wb.worksheets:
+            ws.freeze_panes = "A2"
+
+            for cell in ws[1]:
+                cell.fill = header_fill
+                cell.font = header_font
+                cell.alignment = Alignment(
+                    horizontal="center",
+                    vertical="center"
+                )
+
+            for col_idx in range(1, ws.max_column + 1):
+                letter = get_column_letter(col_idx)
+                max_len = 0
+
+                for cell in ws[letter]:
+                    value = "" if cell.value is None else str(cell.value)
+                    max_len = max(max_len, len(value))
+
+                ws.column_dimensions[letter].width = min(
+                    max(max_len + 2, 10),
+                    32
+                )
+
+        output = BytesIO()
+        wb.save(output)
+        output.seek(0)
+
+    except Exception:
+        output.seek(0)
+
     st.download_button(
-        "⬇️ Download Smart LPO Report",
+        "⬇️ Download Smart LPO Excel",
         data=output.getvalue(),
         file_name=f"Smart_LPO_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
