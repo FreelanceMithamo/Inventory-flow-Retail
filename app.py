@@ -109,7 +109,7 @@ st.markdown("""
 # -------------------------------------------------
 if "users" not in st.session_state:
     st.session_state.users = {
-        "admin": "stockflow2025",
+        "Administrator": "Jose2024",      # ← Your admin account
         "demo": "demo123",
         "manager": "branch123"
     }
@@ -331,12 +331,14 @@ def home_page():
                     </div>
                     """, unsafe_allow_html=True)
         
+        # ========== ADMIN RESETS (Improved) ==========
         with tab3:
-            if st.session_state.username != "admin":
-                st.warning("Only the Admin can manage password reset requests.")
+            if st.session_state.username != "Administrator":
+                st.warning("Only the Administrator can manage password resets.")
             else:
-                st.markdown("#### Pending Password Reset Requests")
+                st.markdown("#### Admin Password Management")
                 
+                st.markdown("##### 1. Pending Reset Requests")
                 if not st.session_state.pending_resets:
                     st.info("No pending reset requests.")
                 else:
@@ -345,12 +347,37 @@ def home_page():
                         with col_a:
                             st.write(f"**{user}** requested a password reset")
                         with col_b:
-                            if st.button("Reset", key=f"reset_{user}"):
-                                temp_pw = "Temp1234"
-                                st.session_state.users[user] = temp_pw
+                            if st.button("Clear Request", key=f"clear_{user}"):
                                 st.session_state.pending_resets.remove(user)
-                                st.success(f"Password for **{user}** set to: `{temp_pw}`")
                                 st.rerun()
+                
+                st.markdown("---")
+                st.markdown("##### 2. Manually Reset Any User Password")
+                
+                with st.form("admin_reset_form"):
+                    target_user = st.selectbox(
+                        "Select user to reset",
+                        options=list(st.session_state.users.keys())
+                    )
+                    new_password = st.text_input(
+                        "New Password",
+                        type="password",
+                        help="Must contain letters and numbers (min 6 characters)"
+                    )
+                    confirm_new = st.text_input("Confirm New Password", type="password")
+                    
+                    if st.form_submit_button("Reset Password", use_container_width=True):
+                        if not new_password:
+                            st.error("Please enter a new password")
+                        elif new_password != confirm_new:
+                            st.error("Passwords do not match")
+                        elif not is_strong_password(new_password):
+                            st.error("Password must contain letters and numbers (min 6 characters)")
+                        else:
+                            st.session_state.users[target_user] = new_password
+                            if target_user in st.session_state.pending_resets:
+                                st.session_state.pending_resets.remove(target_user)
+                            st.success(f"Password for **{target_user}** has been successfully reset!")
 
 # -------------------------------------------------
 # Shared Data Loader
@@ -379,7 +406,6 @@ def load_and_prepare(uploaded):
             key = key + " | " + p
         return key, brand, group, model
     
-    # Sales
     df_s = df_sales.copy()
     df_s["Product_Key"], brand_col, group_col, model_col = make_key(df_s)
     fixed = ["Product_Key"]
@@ -396,7 +422,6 @@ def load_and_prepare(uploaded):
     )
     sales_agg["Monthly_Avg"] = (sales_agg["Total_Sold"] / 8).round(2)
     
-    # Stocks
     df_st = df_stock.copy()
     df_st["Product_Key"], _, _, _ = make_key(df_st)
     fixed2 = ["Product_Key"]
