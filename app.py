@@ -1283,44 +1283,13 @@ def smart_lpo():
         df["Is_Backstore_Large_Item"] = False
 
     # -------------------------------------------------
-    # MDA / SDA 4-month consistency protection
+    # MDA / SDA / Power Protection
     #
-    # Applies to MDA/SDA only.
+    # These categories intentionally use the ORIGINAL StockFlow
+    # cumulative-average replenishment logic only.
     #
-    # If there are at least 4 consecutive months with >=1 sale AND
-    # current physical stock <= 1, order at least 1 unit.
-    #
-    # This protection works even when the 8-month average is below 1.
-    # The normal cumulative-average rule remains active alongside it.
+    # The 4-month consecutive-sales protection is NOT applied here.
     # -------------------------------------------------
-    mda_sda_protection = (
-        df["ItemGroup1"].apply(_is_mda_sda) &
-        df["Backstore_4M_Consecutive"] &
-        (df["Current_Stock"] <= 1)
-    )
-
-    forced_mda_sda_order = np.where(
-        mda_sda_protection,
-        1,
-        0
-    ).astype(int)
-
-    df["Suggested_Order"] = np.maximum(
-        df["Suggested_Order"].astype(int),
-        forced_mda_sda_order
-    )
-
-    df["Order_Reason"] = np.select(
-        [
-            mda_sda_protection & (normal_order > 0),
-            mda_sda_protection
-        ],
-        [
-            "MDA/SDA 4-month consecutive sales + standard replenishment",
-            "MDA/SDA 4-month consecutive sales — minimum 1 pc"
-        ],
-        default=df["Order_Reason"]
-    )
 
     # -------------------------------------------------
     # Final order tables
@@ -1332,13 +1301,27 @@ def smart_lpo():
         ascending=[True, False, False]
     )
 
-    mika_lpo = lpo[
-        lpo["Brand"].astype(str).str.strip().str.upper().eq("MIKA")
-    ].copy()
+    # Brands requiring the formal LPO document.
+    # MIKA remains included, with Samsung, Bosch and Oryx added.
+    LPO_BRANDS = {
+        "MIKA",
+        "SAMSUNG",
+        "BOSCH",
+        "ORYX"
+    }
 
-    goods_issue = lpo[
-        ~lpo["Brand"].astype(str).str.strip().str.upper().eq("MIKA")
-    ].copy()
+    lpo_lpo_brands = (
+        lpo["Brand"]
+        .astype(str)
+        .str.strip()
+        .str.upper()
+        .isin(LPO_BRANDS)
+    )
+
+    mika_lpo = lpo[lpo_lpo_brands].copy()
+
+    # Every other brand goes to the Goods issue sheet.
+    goods_issue = lpo[~lpo_lpo_brands].copy()
 
     if len(lpo) == 0:
         st.success(
@@ -1403,7 +1386,7 @@ def smart_lpo():
     ]
 
     tab_mika, tab_goods = st.tabs([
-        f"📄 LPO — MIKA ({len(mika_lpo)})",
+        f"📄 LPO — MIKA / Samsung / Bosch / Oryx ({len(mika_lpo)})",
         f"📦 Goods issue — Other Brands ({len(goods_issue)})"
     ])
 
@@ -1419,7 +1402,7 @@ def smart_lpo():
                 height=450
             )
         else:
-            st.info("No MIKA items require ordering.")
+            st.info("No MIKA / Samsung / Bosch / Oryx items require ordering.")
 
     with tab_goods:
         if len(goods_issue) > 0:
@@ -1437,8 +1420,8 @@ def smart_lpo():
 
     # -------------------------------------------------
     # Excel output
-    #   LPO          = MIKA only
-    #   Goods issue  = all non-MIKA
+    #   LPO          = MIKA + Samsung + Bosch + Oryx
+    #   Goods issue  = every other brand
     #   Branch_Summary = combined summary
     # -------------------------------------------------
     output = BytesIO()
@@ -1470,7 +1453,7 @@ def smart_lpo():
             )
         else:
             pd.DataFrame({
-                "Message": ["No MIKA orders recommended"]
+                "Message": ["No MIKA / Samsung / Bosch / Oryx orders recommended"]
             }).to_excel(
                 writer,
                 sheet_name="LPO",
