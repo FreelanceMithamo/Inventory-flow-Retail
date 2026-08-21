@@ -438,48 +438,136 @@ def _normalise_month_name(value):
     return text[:3]
 
 
-def _find_backstore_sales_sheet(xlsx):
-    """Find an optional monthly back-store sales sheet."""
-    # Prefer an explicit Back Store + Sales name.
-    candidates = [
-        s for s in xlsx.sheet_names
-        if "back" in s.lower() and "sale" in s.lower()
+def _month_columns(df):
+    """Return detected month columns in calendar order."""
+    month_order = [
+        "JAN", "FEB", "MAR", "APR", "MAY", "JUN",
+        "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"
     ]
 
-    if candidates:
-        return candidates[0]
+    found = []
+    for month in month_order:
+        col = next(
+            (c for c in df.columns
+             if str(c).strip().upper()[:3] == month),
+            None
+        )
+        if col is not None:
+            found.append((month, col))
+    return found
 
-    # Fall back to a sheet containing monthly headers and Total sales.
-    month_tokens = {"JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG",
-                    "SEP", "OCT", "NOV", "DEC"}
 
-    for s in xlsx.sheet_names:
+def _is_backstore_sales_layout(df):
+    """
+    The back-store sales sheet is branch-row based:
+
+        Branch | Brand | ItemGroup | ModelNo | JAN ... AUG | Total sales
+
+    This check prevents JAN/FEB/MAR/... from ever being interpreted as
+    branch names.
+    """
+    cols = [str(c).strip().lower().replace(" ", "") for c in df.columns]
+
+    has_branch = any(c in {"branch", "showroom"} for c in cols)
+    has_brand = any("brand" in c for c in cols)
+    has_group = any("itemgroup" in c or c == "group" or "category" in c for c in cols)
+    has_model = any("modelno" in c or c == "model" or "sku" in c for c in cols)
+    months = _month_columns(df)
+
+    return (
+        has_branch
+        and has_brand
+        and has_group
+        and has_model
+        and len(months) >= 4
+    )
+
+
+def _find_backstore_sales_sheet(xlsx):
+    """Find the sheet using the branch-row/month-column layout."""
+    # First prefer explicitly named back-store sales sheets.
+    explicit = [
+        s for s in xlsx.sheet_names
+        if (
+            ("back" in s.lower() and "sale" in s.lower())
+            or "backstore" in s.lower()
+            or "back store" in s.lower()
+        )
+    ]
+
+    checked = []
+
+    for s in explicit + [s for s in xlsx.sheet_names if s not in explicit]:
+        if s in checked:
+            continue
+        checked.append(s)
+
         try:
-            preview = pd.read_excel(xlsx, sheet_name=s, nrows=3)
-            cols = {_normalise_month_name(c) for c in preview.columns}
-            if len(cols.intersection(month_tokens)) >= 4 and any(
-                "total" in str(c).lower() and "sale" in str(c).lower()
-                for c in preview.columns
-            ):
-                return s
+            preview = pd.read_excel(xlsx, sheet_name=s, nrows=10)
         except Exception:
             continue
+
+        if _is_backstore_sales_layout(preview):
+            return s
+
+    return None
+
+
+def _find_standard_sales_sheet(xlsx):
+    """
+    Find the original StockFlow sales layout:
+        Brand | Group | Model | BRANCH1 | BRANCH2 | ...
+    Do NOT select the branch-row/month-column back-store sheet.
+    """
+    for s in xlsx.sheet_names:
+        try:
+            preview = pd.read_excel(xlsx, sheet_name=s, nrows=5)
+        except Exception:
+            continue
+
+        if _is_backstore_sales_layout(preview):
+            continue
+
+        cols_lower = [str(c).strip().lower() for c in preview.columns]
+
+        has_brand = any("brand" in c for c in cols_lower)
+        has_group = any("group" in c or "category" in c for c in cols_lower)
+        has_model = any("model" in c or "sku" in c for c in cols_lower)
+
+        # Exclude a pure stock sheet.
+        if not (has_brand and has_model):
+            continue
+
+        non_id_value_cols = []
+        for c, original in zip(cols_lower, preview.columns):
+            if (
+                "brand" not in c
+                and "group" not in c
+                and "category" not in c
+                and "model" not in c
+                and "sku" not in c
+                and "total" not in c
+                and not c.startswith("unnamed")
+            ):
+                non_id_value_cols.append(original)
+
+        if non_id_value_cols:
+            return s
 
     return None
 
 
 def _prepare_backstore_sales(xlsx):
     """
-    Read the new Back Store Sales structure shown by the user.
+    Read the branch-row/month-column back-store sales sheet.
 
-    Expected layout:
+    Expected:
         Branch | Brand | ItemGroup | ModelNo |
-        JAN | FEB | ... | AUG | Total sales
+        JAN | FEB | MAR | APR | MAY | JUN | JUL | AUG | Total sales
 
-    The returned dataframe is normalized to:
-        Product_Key | Branch | Brand | ItemGroup1 | Model No |
-        Jan ... Dec | Backstore_Total_Sold | Backstore_4M_Consecutive |
-        Backstore_Consecutive_Sales
+    Branch is ALWAYS taken from the Branch column.
+    Month columns are ONLY used as sales history and are never melted
+    into a Branch field.
     """
     sheet = _find_backstore_sales_sheet(xlsx)
 
@@ -489,7 +577,10 @@ def _prepare_backstore_sales(xlsx):
     raw = pd.read_excel(xlsx, sheet_name=sheet).copy()
 
     branch_col = next(
-        (c for c in raw.columns if "branch" in str(c).lower() or "showroom" in str(c).lower()),
+        (
+            c for c in raw.columns
+            if str(c).strip().lower() in {"branch", "showroom"}
+        ),
         None
     )
     brand_col = next(
@@ -500,7 +591,7 @@ def _prepare_backstore_sales(xlsx):
         (
             c for c in raw.columns
             if "itemgroup" in str(c).lower()
-            or "group" in str(c).lower()
+            or str(c).strip().lower() == "group"
             or "category" in str(c).lower()
         ),
         None
@@ -510,7 +601,7 @@ def _prepare_backstore_sales(xlsx):
             c for c in raw.columns
             if "modelno" in str(c).lower()
             or "model no" in str(c).lower()
-            or "model" in str(c).lower()
+            or str(c).strip().lower() == "model"
             or "sku" in str(c).lower()
         ),
         None
@@ -523,52 +614,79 @@ def _prepare_backstore_sales(xlsx):
         None
     )
 
-    if not all([branch_col, brand_col, model_col]):
-        return None
+    month_cols = _month_columns(raw)
 
-    month_cols = []
-    month_order = [
-        "JAN", "FEB", "MAR", "APR", "MAY", "JUN",
-        "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"
-    ]
-
-    for month in month_order:
-        col = next(
-            (c for c in raw.columns if _normalise_month_name(c) == month),
-            None
-        )
-        if col is not None:
-            month_cols.append((month, col))
-
-    # Need at least four months for the MDA/SDA consecutive rule.
-    if len(month_cols) < 4:
+    if not all([branch_col, brand_col, group_col, model_col]) or len(month_cols) < 4:
         return None
 
     result = pd.DataFrame({
         "Branch": raw[branch_col].astype(str).str.strip(),
         "Brand": raw[brand_col].astype(str).str.strip(),
-        "ItemGroup1": (
-            raw[group_col].astype(str).str.strip()
-            if group_col else ""
-        ),
+        "ItemGroup1": raw[group_col].astype(str).str.strip(),
         "Model No": raw[model_col].astype(str).str.strip()
     })
 
+    detected_month_names = []
     for month, col in month_cols:
         result[month] = pd.to_numeric(
             raw[col], errors="coerce"
         ).fillna(0)
+        detected_month_names.append(month)
+
+    # Prefer the workbook's Total sales, but calculate it from months if
+    # it is missing or unreliable.
+    calculated_total = result[detected_month_names].sum(axis=1)
 
     if total_col is not None:
-        result["Backstore_Total_Sold"] = pd.to_numeric(
+        reported_total = pd.to_numeric(
             raw[total_col], errors="coerce"
         ).fillna(0)
-    else:
-        result["Backstore_Total_Sold"] = result[
-            [m for m, _ in month_cols]
-        ].sum(axis=1)
 
-    # Build the same product key used by the main Stock/Sales loader.
+        # If Total sales is blank/zero while monthly values exist, use the
+        # calculated total. Otherwise preserve the supplied total.
+        result["Backstore_Total_Sold"] = np.where(
+            reported_total.abs() > 0,
+            reported_total,
+            calculated_total
+        )
+    else:
+        result["Backstore_Total_Sold"] = calculated_total
+
+    # Average monthly sales is based ONLY on the detected Jan-Aug-style
+    # monthly columns, not on branch names.
+    result["Backstore_Monthly_Avg"] = (
+        result[detected_month_names].sum(axis=1) / len(detected_month_names)
+    ).round(2)
+
+    # Find ANY 4 consecutive calendar months with >=1 sale.
+    # With Jan-Aug data this checks:
+    # Jan-Apr, Feb-May, Mar-Jun, Apr-Jul, May-Aug.
+    result["Backstore_4M_Consecutive"] = False
+    result["Backstore_Consecutive_Sales"] = ""
+
+    month_values = detected_month_names
+
+    for row_idx, row in result.iterrows():
+        sales = [float(row[m]) for m in month_values]
+        found_run = False
+
+        for i in range(len(sales) - 3):
+            four = sales[i:i + 4]
+            if all(v >= 1 for v in four):
+                months = month_values[i:i + 4]
+                result.at[row_idx, "Backstore_4M_Consecutive"] = True
+                result.at[row_idx, "Backstore_Consecutive_Sales"] = (
+                    " | ".join(
+                        f"{m}:{int(v)}"
+                        for m, v in zip(months, four)
+                    )
+                )
+                found_run = True
+                break
+
+        if not found_run:
+            result.at[row_idx, "Backstore_Consecutive_Sales"] = ""
+
     result["Product_Key"] = (
         result["Brand"].astype(str).str.strip()
         + " | "
@@ -577,51 +695,14 @@ def _prepare_backstore_sales(xlsx):
         + result["Model No"].astype(str).str.strip()
     )
 
-    # Identify ANY run of 4 consecutive months with >=1 sale.
-    # Missing months are treated as zero.
-    recent_months = [m for m, _ in month_cols]
-    result["Backstore_4M_Consecutive"] = False
-    result["Backstore_Consecutive_Sales"] = ""
-
-    def find_consecutive_run(row):
-        values = [float(row[m]) for m in recent_months]
-        run = 0
-        end_idx = None
-
-        for idx, value in enumerate(values):
-            if value >= 1:
-                run += 1
-                if run >= 4:
-                    end_idx = idx
-                    break
-            else:
-                run = 0
-
-        if end_idx is None:
-            return False, ""
-
-        start_idx = end_idx - 3
-        months = recent_months[start_idx:end_idx + 1]
-        sales = [int(row[m]) for m in months]
-
-        return True, " | ".join(
-            f"{m}:{qty}" for m, qty in zip(months, sales)
-        )
-
-    flags = result.apply(find_consecutive_run, axis=1)
-    result["Backstore_4M_Consecutive"] = flags.apply(lambda x: x[0])
-    result["Backstore_Consecutive_Sales"] = flags.apply(lambda x: x[1])
-
+    # Keep the month columns in the normalized dataset for transparent LPO
+    # output. They remain sales history columns, never branch identifiers.
     return result
-
 
 def load_and_prepare(uploaded, include_backstore_sales=False):
     xlsx = pd.ExcelFile(uploaded)
 
-    sales_sheet = next(
-        (s for s in xlsx.sheet_names if "sales" in s.lower() and "back" not in s.lower()),
-        None
-    )
+    sales_sheet = _find_standard_sales_sheet(xlsx)
     stock_sheet = next(
         (s for s in xlsx.sheet_names if "stock" in s.lower()),
         None
@@ -1096,26 +1177,31 @@ def smart_lpo():
         # Normalize keys and join branch/SKU back-store sellout information.
         b = backstore_sales.copy()
 
-        # Keep the product key exact enough to match the existing loader.
-        b["Product_Key"] = (
-            b["Brand"].astype(str).str.strip()
-            + " | "
-            + b["ItemGroup1"].astype(str).str.strip()
-            + " | "
-            + b["Model No"].astype(str).str.strip()
-        )
-
-        b = b[
-            [
-                "Product_Key",
-                "Branch",
-                "Backstore_Total_Sold",
-                "Backstore_4M_Consecutive",
-                "Backstore_Consecutive_Sales"
-            ]
-        ].drop_duplicates(
+        # Ensure there is exactly one row per Product + Branch.
+        b = b.drop_duplicates(
             subset=["Product_Key", "Branch"]
         )
+
+        # Only merge branch-level sales history. Month columns remain
+        # sales-history fields and are never turned into branch values.
+        month_history_cols = [
+            c for c in [
+                "JAN", "FEB", "MAR", "APR", "MAY", "JUN",
+                "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"
+            ]
+            if c in b.columns
+        ]
+
+        merge_cols = [
+            "Product_Key",
+            "Branch",
+            "Backstore_Total_Sold",
+            "Backstore_Monthly_Avg",
+            "Backstore_4M_Consecutive",
+            "Backstore_Consecutive_Sales"
+        ] + month_history_cols
+
+        b = b[merge_cols]
 
         df = df.merge(
             b,
@@ -1124,6 +1210,13 @@ def smart_lpo():
         )
 
         df["Backstore_Total_Sold"] = df["Backstore_Total_Sold"].fillna(0)
+        df["Backstore_Monthly_Avg"] = df["Backstore_Monthly_Avg"].fillna(0)
+        for month in [
+            "JAN", "FEB", "MAR", "APR", "MAY", "JUN",
+            "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"
+        ]:
+            if month in df.columns:
+                df[month] = df[month].fillna(0)
         df["Backstore_4M_Consecutive"] = (
             df["Backstore_4M_Consecutive"]
             .fillna(False)
@@ -1144,6 +1237,9 @@ def smart_lpo():
 
         # For large back-store items, only the absence of physical stock
         # triggers a virtual replenishment order.
+        # IMPORTANT:
+        # Branch comes from the Back Store Sales "Branch" column.
+        # JAN-AUG are sales-history columns only.
         backstore_virtual_order = np.where(
             df["Is_Backstore_Large_Item"] &
             (df["Backstore_Total_Sold"] > 0) &
@@ -1278,14 +1374,26 @@ def smart_lpo():
 
     st.markdown("### Detailed Order Suggestions")
 
+    # Branch is the replenishment destination. Month columns are sales
+    # history only and are shown after the branch/product information.
+    month_export_cols = [
+        c for c in [
+            "JAN", "FEB", "MAR", "APR", "MAY", "JUN",
+            "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"
+        ]
+        if c in lpo.columns
+    ]
+
     display_cols = [
         "Branch",
         "Brand",
         "ItemGroup1",
         "Model No",
         "Current_Stock",
-        "Monthly_Avg",
         "Backstore_Total_Sold",
+        "Backstore_Monthly_Avg",
+    ] + month_export_cols + [
+        "Monthly_Avg",
         "Days_of_Cover",
         "Target_Stock",
         "Backstore_4M_Consecutive",
@@ -1342,8 +1450,10 @@ def smart_lpo():
             "ItemGroup1",
             "Model No",
             "Current_Stock",
-            "Monthly_Avg",
             "Backstore_Total_Sold",
+            "Backstore_Monthly_Avg",
+        ] + month_export_cols + [
+            "Monthly_Avg",
             "Days_of_Cover",
             "Target_Stock",
             "Backstore_4M_Consecutive",
