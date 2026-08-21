@@ -651,7 +651,7 @@ def smart_lpo():
     col1, col2 = st.columns([5, 1])
     with col1:
         st.markdown("## 📄📋 Smart LPO Generator")
-        st.caption("LPO sheet = MIKA / SAMSUNG / ORYX / Bosch  |  Goods issue = Other brands")
+        st.caption("3 Sheets: LPO | Goods issue | Space Consuming")
     with col2:
         if st.button("← Back", use_container_width=True, key="lpo_back"):
             st.session_state.module = None
@@ -673,8 +673,8 @@ def smart_lpo():
     # Diagnostic
     st.write("### Quick Check")
     st.write(f"Total records: **{len(df)}**")
-    st.write(f"Unique Branches: **{df['Branch'].nunique()}** → {list(df['Branch'].unique())[:10]}")
-    st.write(f"Unique Brands: **{df['Brand'].nunique()}** → {list(df['Brand'].dropna().unique())[:10]}")
+    st.write(f"Unique Branches: **{df['Branch'].nunique()}**")
+    st.write(f"Sample Brands: {list(df['Brand'].dropna().unique())[:12]}")
     
     # Settings
     st.markdown("### Ordering Settings")
@@ -686,30 +686,47 @@ def smart_lpo():
     with col_c:
         safety_days = st.number_input("Min Days of Cover (normal)", 10, 60, 30)
     
-    df["Days_of_Cover"] = np.where(df["Monthly_Avg"] > 0, (df["Current_Stock"] / df["Monthly_Avg"] * 30).round(1), 999)
+    # Calculations
+    df["Days_of_Cover"] = np.where(
+        df["Monthly_Avg"] > 0,
+        (df["Current_Stock"] / df["Monthly_Avg"] * 30).round(1),
+        999
+    )
     
     item_group = df["ItemGroup1"].astype(str).str.upper()
-    df["Is_MDA_SDA"] = item_group.str.contains("MDA|SDA", na=False)
-    df["Is_Space_Consuming"] = item_group.str.contains("LDA|ELECTRONICS|BUILT-IN|BUILT IN|COMMERCIAL", na=False)
     
+    # Category flags
+    df["Is_MDA_SDA"] = item_group.str.contains("MDA|SDA", na=False)
+    
+    df["Is_Space_Consuming"] = item_group.str.contains(
+        "LDA|ELECTRONICS|BUILT-IN|BUILT IN|COMMERCIAL", na=False
+    )
+    
+    # Brands for LPO sheet
     brand_upper = df["Brand"].astype(str).str.upper().str.strip()
     lpo_brands = ["MIKA", "SAMSUNG", "ORYX", "BOSCH"]
     df["Is_LPO_Brand"] = brand_upper.isin(lpo_brands)
     
-    st.write(f"Rows from LPO brands (MIKA/SAMSUNG/ORYX/Bosch): **{df['Is_LPO_Brand'].sum()}**")
-    
     df["Target_Stock"] = (df["Monthly_Avg"] * target_months).round(0)
     
+    # ---------- ORDERING LOGIC ----------
     suggested = []
+    
     for idx, row in df.iterrows():
         order_qty = 0
         
+        # 1. Space-consuming categories (LDA, Electronics, Built-in, Commercial)
+        #    Only if sold at least 3 pcs in the whole period → Max order = 1
         if row["Is_Space_Consuming"]:
-            if row["Monthly_Avg"] >= 3.0 and row["Current_Stock"] <= 1:
+            if row["Total_Sold"] >= 3 and row["Current_Stock"] <= 1:
                 order_qty = 1
+        
+        # 2. MDA / SDA items
         elif row["Is_MDA_SDA"]:
             if row["Monthly_Avg"] >= 0.6 and row["Current_Stock"] <= 2:
                 order_qty = max(1, int(round(row["Monthly_Avg"] * 1.4 - row["Current_Stock"])))
+        
+        # 3. Normal items
         else:
             if (row["Monthly_Avg"] >= min_sales_normal and 
                 row["Days_of_Cover"] < safety_days and 
@@ -720,50 +737,79 @@ def smart_lpo():
     
     df["Suggested_Order"] = suggested
     
+    # Final recommendations
     lpo = df[df["Suggested_Order"] > 0].copy()
     lpo = lpo.sort_values(["Brand", "Branch", "Suggested_Order"], ascending=[True, True, False])
     
-    lpo_sheet = lpo[lpo["Is_LPO_Brand"]].copy()
-    goods_issue = lpo[~lpo["Is_LPO_Brand"]].copy()
+    # Split into 3 groups
+    space_consuming = lpo[lpo["Is_Space_Consuming"]].copy()
+    lpo_sheet = lpo[(lpo["Is_LPO_Brand"]) & (~lpo["Is_Space_Consuming"])].copy()
+    goods_issue = lpo[(~lpo["Is_LPO_Brand"]) & (~lpo["Is_Space_Consuming"])].copy()
     
-    st.success(f"Total recommendations: **{len(lpo)}**  |  LPO sheet: {len(lpo_sheet)}  |  Goods issue: {len(goods_issue)}")
+    st.success(
+        f"Total: **{len(lpo)}**  |  "
+        f"LPO: {len(lpo_sheet)}  |  "
+        f"Goods issue: {len(goods_issue)}  |  "
+        f"Space Consuming: {len(space_consuming)}"
+    )
     
-    display_cols = ["Branch", "Brand", "ItemGroup1", "Model No", "Current_Stock", "Monthly_Avg", "Days_of_Cover", "Suggested_Order"]
+    display_cols = [
+        "Branch", "Brand", "ItemGroup1", "Model No",
+        "Current_Stock", "Monthly_Avg", "Days_of_Cover", "Suggested_Order"
+    ]
     
-    tab1, tab2 = st.tabs(["LPO (MIKA / SAMSUNG / ORYX / Bosch)", "Goods issue (Other brands)"])
+    tab1, tab2, tab3 = st.tabs([
+        "LPO (MIKA / SAMSUNG / ORYX / Bosch)",
+        "Goods issue (Other brands)",
+        "Space Consuming (LDA / Electronics / Built-in / Commercial)"
+    ])
     
     with tab1:
         if len(lpo_sheet) == 0:
-            st.warning("No items currently qualify for the LPO sheet.")
+            st.info("No items for LPO sheet.")
         else:
-            st.dataframe(lpo_sheet[display_cols], use_container_width=True, height=420)
+            st.dataframe(lpo_sheet[display_cols], use_container_width=True, height=400)
     
     with tab2:
         if len(goods_issue) == 0:
             st.info("No items for Goods issue sheet.")
         else:
-            st.dataframe(goods_issue[display_cols], use_container_width=True, height=420)
+            st.dataframe(goods_issue[display_cols], use_container_width=True, height=400)
     
+    with tab3:
+        if len(space_consuming) == 0:
+            st.info("No Space Consuming items currently need ordering.")
+        else:
+            st.dataframe(space_consuming[display_cols], use_container_width=True, height=400)
+    
+    # ---------- Download with 3 sheets ----------
     output = BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        # Sheet 1: LPO
         if len(lpo_sheet) > 0:
             lpo_sheet[display_cols].to_excel(writer, sheet_name="LPO", index=False)
         else:
             pd.DataFrame({"Message": ["No recommendations"]}).to_excel(writer, sheet_name="LPO", index=False)
         
+        # Sheet 2: Goods issue
         if len(goods_issue) > 0:
             goods_issue[display_cols].to_excel(writer, sheet_name="Goods issue", index=False)
         else:
             pd.DataFrame({"Message": ["No recommendations"]}).to_excel(writer, sheet_name="Goods issue", index=False)
+        
+        # Sheet 3: Space Consuming
+        if len(space_consuming) > 0:
+            space_consuming[display_cols].to_excel(writer, sheet_name="Space Consuming", index=False)
+        else:
+            pd.DataFrame({"Message": ["No recommendations"]}).to_excel(writer, sheet_name="Space Consuming", index=False)
     
     st.download_button(
-        "⬇️ Download Smart LPO Report",
+        "⬇️ Download Smart LPO Report (3 Sheets)",
         data=output.getvalue(),
         file_name=f"Smart_LPO_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         use_container_width=True
     )
-
 # -------------------------------------------------
 # Router
 # -------------------------------------------------
