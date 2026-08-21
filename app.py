@@ -153,7 +153,7 @@ def is_strong_password(pw: str) -> bool:
     return has_letter and has_number
 
 # -------------------------------------------------
-# Login + Home (same as before)
+# Login Page
 # -------------------------------------------------
 def login_page():
     st.markdown("<br><br>", unsafe_allow_html=True)
@@ -225,6 +225,9 @@ def login_page():
         
         st.markdown('<div class="footer-text">Created by Joseph in 2026</div>', unsafe_allow_html=True)
 
+# -------------------------------------------------
+# Home Page
+# -------------------------------------------------
 def home_page():
     col_left, col_right = st.columns([5, 1])
     with col_left:
@@ -343,6 +346,7 @@ def home_page():
                 st.warning("Only the Administrator can access this panel.")
             else:
                 st.markdown("#### Admin Panel")
+                
                 st.markdown("##### Pending Password Reset Requests")
                 if not st.session_state.pending_resets:
                     st.info("No pending reset requests.")
@@ -391,10 +395,11 @@ def home_page():
                             st.rerun()
 
 # -------------------------------------------------
-# FIXED Data Loader - Better branch detection
+# CORRECTED Data Loader (matches your actual file structure)
 # -------------------------------------------------
 def load_and_prepare(uploaded):
     xlsx = pd.ExcelFile(uploaded)
+    
     sales_sheet = next((s for s in xlsx.sheet_names if "sales" in s.lower()), None)
     stock_sheet = next((s for s in xlsx.sheet_names if "stock" in s.lower()), None)
     
@@ -404,84 +409,100 @@ def load_and_prepare(uploaded):
     df_sales = pd.read_excel(xlsx, sheet_name=sales_sheet)
     df_stock = pd.read_excel(xlsx, sheet_name=stock_sheet)
     
-    def make_key(df):
-        brand = next((c for c in df.columns if "brand" in str(c).lower()), None)
-        group = next((c for c in df.columns if "group" in str(c).lower()), None)
-        model = next((c for c in df.columns if "model" in str(c).lower()), None)
-        parts = []
-        if brand: parts.append(df[brand].astype(str).str.strip())
-        if group: parts.append(df[group].astype(str).str.strip())
-        if model: parts.append(df[model].astype(str).str.strip())
-        key = parts[0]
-        for p in parts[1:]:
-            key = key + " | " + p
-        return key, brand, group, model
+    # ---------- SALES (Long format: Branch | Brand | ItemGroup | ModelNo | Total sales) ----------
+    sales_cols = {str(c).lower().strip(): c for c in df_sales.columns}
     
-    # Month names to exclude
-    month_keywords = [
-        "jan", "feb", "mar", "apr", "may", "jun", 
-        "jul", "aug", "sep", "oct", "nov", "dec",
-        "january", "february", "march", "april", "june",
-        "july", "august", "september", "october", "november", "december",
-        "total", "unnamed"
-    ]
+    branch_col = next((sales_cols[k] for k in sales_cols if "branch" in k), None)
+    brand_col  = next((sales_cols[k] for k in sales_cols if "brand" in k), None)
+    group_col  = next((sales_cols[k] for k in sales_cols if "group" in k), None)
+    model_col  = next((sales_cols[k] for k in sales_cols if "model" in k), None)
+    sales_col  = next((sales_cols[k] for k in sales_cols if "sale" in k or "total" in k), None)
     
-    def is_branch_column(col_name):
-        col = str(col_name).lower().strip()
-        if any(m in col for m in month_keywords):
-            return False
-        if col.replace(".", "").replace(" ", "").isdigit():
-            return False
-        return True
+    if not all([branch_col, brand_col, model_col, sales_col]):
+        return None, f"Sales sheet missing columns. Found: {list(df_sales.columns)}"
     
-    # ---------- Sales ----------
-    df_s = df_sales.copy()
-    df_s["Product_Key"], brand_col, group_col, model_col = make_key(df_s)
+    sales_agg = df_sales[[branch_col, brand_col, group_col, model_col, sales_col]].copy()
+    sales_agg.columns = ["Branch", "Brand", "ItemGroup1", "Model No", "Total_Sold"]
     
-    fixed = ["Product_Key"]
-    if brand_col: fixed.append(brand_col)
-    if group_col: fixed.append(group_col)
-    if model_col: fixed.append(model_col)
-    
-    branches = [c for c in df_s.columns if c not in fixed and is_branch_column(c)]
-    
-    sales_long = df_s.melt(id_vars=fixed, value_vars=branches, var_name="Branch", value_name="Qty_Sold")
-    sales_long["Qty_Sold"] = pd.to_numeric(sales_long["Qty_Sold"], errors="coerce").fillna(0)
-    sales_long["Branch"] = sales_long["Branch"].astype(str).str.strip()
-    
-    sales_agg = sales_long.groupby(["Product_Key", "Branch"], as_index=False).agg(
-        Total_Sold=("Qty_Sold", "sum"),
-        **{c: (c, "first") for c in [brand_col, group_col, model_col] if c}
-    )
+    sales_agg["Total_Sold"] = pd.to_numeric(sales_agg["Total_Sold"], errors="coerce").fillna(0)
+    sales_agg["Branch"] = sales_agg["Branch"].astype(str).str.strip()
+    sales_agg["Brand"] = sales_agg["Brand"].astype(str).str.strip()
+    sales_agg["ItemGroup1"] = sales_agg["ItemGroup1"].astype(str).str.strip()
+    sales_agg["Model No"] = sales_agg["Model No"].astype(str).str.strip()
     sales_agg["Monthly_Avg"] = (sales_agg["Total_Sold"] / 8).round(2)
     
-    # ---------- Stocks ----------
-    df_st = df_stock.copy()
-    df_st["Product_Key"], _, _, _ = make_key(df_st)
+    sales_agg["Product_Key"] = (
+        sales_agg["Brand"] + " | " + 
+        sales_agg["ItemGroup1"] + " | " + 
+        sales_agg["Model No"]
+    )
     
-    fixed2 = ["Product_Key"]
-    branches2 = [c for c in df_st.columns if c not in fixed2 and is_branch_column(c)]
+    # ---------- STOCKS (Wide format) ----------
+    stock_cols = {str(c).lower().strip(): c for c in df_stock.columns}
     
-    stock_long = df_st.melt(id_vars=fixed2, value_vars=branches2, var_name="Branch", value_name="Current_Stock")
+    s_brand = next((stock_cols[k] for k in stock_cols if "brand" in k), None)
+    s_group = next((stock_cols[k] for k in stock_cols if "group" in k), None)
+    s_model = next((stock_cols[k] for k in stock_cols if "model" in k), None)
+    
+    if not all([s_brand, s_model]):
+        return None, f"Stocks sheet missing columns. Found: {list(df_stock.columns)}"
+    
+    id_vars = [s_brand]
+    if s_group: id_vars.append(s_group)
+    if s_model: id_vars.append(s_model)
+    
+    branch_cols = [c for c in df_stock.columns if c not in id_vars]
+    
+    stock_long = df_stock.melt(
+        id_vars=id_vars,
+        value_vars=branch_cols,
+        var_name="Branch",
+        value_name="Current_Stock"
+    )
+    
     stock_long["Current_Stock"] = pd.to_numeric(stock_long["Current_Stock"], errors="coerce").fillna(0)
     stock_long["Branch"] = stock_long["Branch"].astype(str).str.strip()
     
+    rename_map = {s_brand: "Brand", s_model: "Model No"}
+    if s_group:
+        rename_map[s_group] = "ItemGroup1"
+    stock_long = stock_long.rename(columns=rename_map)
+    
+    if "ItemGroup1" not in stock_long.columns:
+        stock_long["ItemGroup1"] = ""
+    
+    stock_long["Brand"] = stock_long["Brand"].astype(str).str.strip()
+    stock_long["Model No"] = stock_long["Model No"].astype(str).str.strip()
+    stock_long["ItemGroup1"] = stock_long["ItemGroup1"].astype(str).str.strip()
+    
+    stock_long["Product_Key"] = (
+        stock_long["Brand"] + " | " + 
+        stock_long["ItemGroup1"] + " | " + 
+        stock_long["Model No"]
+    )
+    
     stock_agg = stock_long.groupby(["Product_Key", "Branch"], as_index=False)["Current_Stock"].sum()
     
-    # Merge
-    df = pd.merge(stock_agg, sales_agg, on=["Product_Key", "Branch"], how="outer")
+    # ---------- Merge ----------
+    df = pd.merge(
+        stock_agg,
+        sales_agg[["Product_Key", "Branch", "Brand", "ItemGroup1", "Model No", "Total_Sold", "Monthly_Avg"]],
+        on=["Product_Key", "Branch"],
+        how="outer"
+    )
+    
     df["Current_Stock"] = df["Current_Stock"].fillna(0)
     df["Total_Sold"] = df["Total_Sold"].fillna(0)
     df["Monthly_Avg"] = df["Monthly_Avg"].fillna(0)
     
-    if brand_col: df = df.rename(columns={brand_col: "Brand"})
-    if group_col: df = df.rename(columns={group_col: "ItemGroup1"})
-    if model_col: df = df.rename(columns={model_col: "Model No"})
+    df["Brand"] = df["Brand"].fillna("")
+    df["ItemGroup1"] = df["ItemGroup1"].fillna("")
+    df["Model No"] = df["Model No"].fillna("")
     
     return df, None
 
 # -------------------------------------------------
-# MODULES (Transfer + Stock Health remain the same)
+# MODULE 1: Transfer Hub
 # -------------------------------------------------
 def transfer_hub():
     col1, col2 = st.columns([5, 1])
@@ -561,6 +582,9 @@ def transfer_hub():
                            file_name=f"Inter_Branch_Transfers_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
 
+# -------------------------------------------------
+# MODULE 2: Stock Health
+# -------------------------------------------------
 def stock_health():
     col1, col2 = st.columns([5, 1])
     with col1:
@@ -621,7 +645,7 @@ def stock_health():
                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
 
 # -------------------------------------------------
-# MODULE 3: Smart LPO (Corrected)
+# MODULE 3: Smart LPO
 # -------------------------------------------------
 def smart_lpo():
     col1, col2 = st.columns([5, 1])
@@ -646,14 +670,21 @@ def smart_lpo():
         st.error(error)
         return
     
+    # Diagnostic
+    st.write("### Quick Check")
+    st.write(f"Total records: **{len(df)}**")
+    st.write(f"Unique Branches: **{df['Branch'].nunique()}** → {list(df['Branch'].unique())[:10]}")
+    st.write(f"Unique Brands: **{df['Brand'].nunique()}** → {list(df['Brand'].dropna().unique())[:10]}")
+    
+    # Settings
     st.markdown("### Ordering Settings")
     col_a, col_b, col_c = st.columns(3)
     with col_a:
         target_months = st.slider("Target Months of Cover (normal items)", 0.5, 2.0, 1.0, 0.1)
     with col_b:
-        min_sales_normal = st.number_input("Min Monthly Sales (normal)", 0.0, 20.0, 0.8, 0.1)
+        min_sales_normal = st.number_input("Min Monthly Sales (normal)", 0.0, 20.0, 0.5, 0.1)
     with col_c:
-        safety_days = st.number_input("Min Days of Cover (normal)", 10, 45, 25)
+        safety_days = st.number_input("Min Days of Cover (normal)", 10, 60, 30)
     
     df["Days_of_Cover"] = np.where(df["Monthly_Avg"] > 0, (df["Current_Stock"] / df["Monthly_Avg"] * 30).round(1), 999)
     
@@ -661,8 +692,11 @@ def smart_lpo():
     df["Is_MDA_SDA"] = item_group.str.contains("MDA|SDA", na=False)
     df["Is_Space_Consuming"] = item_group.str.contains("LDA|ELECTRONICS|BUILT-IN|BUILT IN|COMMERCIAL", na=False)
     
+    brand_upper = df["Brand"].astype(str).str.upper().str.strip()
     lpo_brands = ["MIKA", "SAMSUNG", "ORYX", "BOSCH"]
-    df["Is_LPO_Brand"] = df["Brand"].astype(str).str.upper().isin(lpo_brands)
+    df["Is_LPO_Brand"] = brand_upper.isin(lpo_brands)
+    
+    st.write(f"Rows from LPO brands (MIKA/SAMSUNG/ORYX/Bosch): **{df['Is_LPO_Brand'].sum()}**")
     
     df["Target_Stock"] = (df["Monthly_Avg"] * target_months).round(0)
     
@@ -674,15 +708,15 @@ def smart_lpo():
             if row["Monthly_Avg"] >= 3.0 and row["Current_Stock"] <= 1:
                 order_qty = 1
         elif row["Is_MDA_SDA"]:
-            if row["Monthly_Avg"] >= 0.8 and row["Current_Stock"] <= 2:
-                order_qty = max(1, int(round(row["Monthly_Avg"] * 1.3 - row["Current_Stock"])))
+            if row["Monthly_Avg"] >= 0.6 and row["Current_Stock"] <= 2:
+                order_qty = max(1, int(round(row["Monthly_Avg"] * 1.4 - row["Current_Stock"])))
         else:
             if (row["Monthly_Avg"] >= min_sales_normal and 
                 row["Days_of_Cover"] < safety_days and 
                 row["Current_Stock"] < row["Target_Stock"]):
                 order_qty = max(0, int(row["Target_Stock"] - row["Current_Stock"]))
         
-        suggested.append(order_qty)
+        suggested.append(max(0, order_qty))
     
     df["Suggested_Order"] = suggested
     
@@ -692,7 +726,7 @@ def smart_lpo():
     lpo_sheet = lpo[lpo["Is_LPO_Brand"]].copy()
     goods_issue = lpo[~lpo["Is_LPO_Brand"]].copy()
     
-    st.success(f"Total: **{len(lpo)}**  |  LPO sheet: {len(lpo_sheet)}  |  Goods issue: {len(goods_issue)}")
+    st.success(f"Total recommendations: **{len(lpo)}**  |  LPO sheet: {len(lpo_sheet)}  |  Goods issue: {len(goods_issue)}")
     
     display_cols = ["Branch", "Brand", "ItemGroup1", "Model No", "Current_Stock", "Monthly_Avg", "Days_of_Cover", "Suggested_Order"]
     
@@ -700,7 +734,7 @@ def smart_lpo():
     
     with tab1:
         if len(lpo_sheet) == 0:
-            st.info("No items for the LPO sheet.")
+            st.warning("No items currently qualify for the LPO sheet.")
         else:
             st.dataframe(lpo_sheet[display_cols], use_container_width=True, height=420)
     
