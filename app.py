@@ -26,7 +26,6 @@ st.markdown("""
         background-position: center;
         background-attachment: fixed;
     }
-    
     #MainMenu, footer, header {visibility: hidden;}
    
     .login-card {
@@ -59,14 +58,9 @@ st.markdown("""
     }
    
     .logo-circle {
-        width: 80px;
-        height: 80px;
-        border-radius: 50%;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        font-size: 1.9rem;
-        margin: 0 auto 1.1rem auto;
+        width: 80px; height: 80px; border-radius: 50%;
+        display: flex; align-items: center; justify-content: center;
+        font-size: 1.9rem; margin: 0 auto 1.1rem auto;
     }
    
     .transfer { background: #fee2e2; color: #dc2626; }
@@ -159,7 +153,7 @@ def is_strong_password(pw: str) -> bool:
     return has_letter and has_number
 
 # -------------------------------------------------
-# Login Page
+# Login + Home (same as before)
 # -------------------------------------------------
 def login_page():
     st.markdown("<br><br>", unsafe_allow_html=True)
@@ -195,8 +189,7 @@ def login_page():
             st.markdown("##### Create a new account")
             with st.form("create_form"):
                 new_user = st.text_input("Choose Username")
-                new_pw = st.text_input("Password", type="password",
-                                      help="Must contain letters and numbers (min 6 characters)")
+                new_pw = st.text_input("Password", type="password", help="Must contain letters and numbers (min 6 characters)")
                 confirm_pw = st.text_input("Confirm Password", type="password")
                 
                 if st.form_submit_button("Create Account", use_container_width=True):
@@ -216,7 +209,7 @@ def login_page():
         with tab_forgot:
             st.markdown('<div class="login-card">', unsafe_allow_html=True)
             st.markdown("##### Forgot Password")
-            st.caption("A request will be sent to the Admin. No automatic email is sent.")
+            st.caption("A request will be sent to the Admin.")
             
             with st.form("forgot_form"):
                 forgot_user = st.text_input("Enter your Username")
@@ -224,21 +217,14 @@ def login_page():
                     if forgot_user not in st.session_state.users:
                         st.error("Username not found")
                     elif forgot_user in st.session_state.pending_resets:
-                        st.warning("A reset request for this user is already pending.")
+                        st.warning("A reset request is already pending.")
                     else:
                         st.session_state.pending_resets.append(forgot_user)
-                        st.success("Request sent to Admin. Please wait for the Admin to reset your password.")
+                        st.success("Request sent to Admin.")
             st.markdown('</div>', unsafe_allow_html=True)
         
-        st.markdown("""
-        <div class="footer-text">
-            Created by Joseph in 2026
-        </div>
-        """, unsafe_allow_html=True)
+        st.markdown('<div class="footer-text">Created by Joseph in 2026</div>', unsafe_allow_html=True)
 
-# -------------------------------------------------
-# Home Page
-# -------------------------------------------------
 def home_page():
     col_left, col_right = st.columns([5, 1])
     with col_left:
@@ -263,10 +249,7 @@ def home_page():
         <div class="module-card">
             <div class="logo-circle transfer">🚚📦🚚</div>
             <h3 style="margin:0.5rem 0;">Transfer Hub</h3>
-            <p style="color:#6b7280; font-size:0.95rem;">
-                Inter-branch stock transfers<br>
-                Move excess to high-demand branches
-            </p>
+            <p style="color:#6b7280; font-size:0.95rem;">Inter-branch stock transfers</p>
         </div>
         """, unsafe_allow_html=True)
         st.write("")
@@ -279,10 +262,7 @@ def home_page():
         <div class="module-card">
             <div class="logo-circle health">❤️</div>
             <h3 style="margin:0.5rem 0;">Stock Health</h3>
-            <p style="color:#6b7280; font-size:0.95rem;">
-                Overstock • Dead stock<br>
-                Aged inventory & Stockouts
-            </p>
+            <p style="color:#6b7280; font-size:0.95rem;">Overstock • Dead stock • Stockouts</p>
         </div>
         """, unsafe_allow_html=True)
         st.write("")
@@ -295,10 +275,7 @@ def home_page():
         <div class="module-card">
             <div class="logo-circle lpo">📄📋</div>
             <h3 style="margin:0.5rem 0;">Smart LPO</h3>
-            <p style="color:#6b7280; font-size:0.95rem;">
-                Automated Local Purchase Orders<br>
-                for all branches
-            </p>
+            <p style="color:#6b7280; font-size:0.95rem;">Automated Local Purchase Orders</p>
         </div>
         """, unsafe_allow_html=True)
         st.write("")
@@ -318,7 +295,6 @@ def home_page():
             st.markdown("#### Update Username or Password")
             with st.form("update_account"):
                 st.write(f"Current username: **{st.session_state.username}**")
-                
                 new_username = st.text_input("New Username (leave blank to keep current)")
                 current_pw = st.text_input("Current Password", type="password")
                 new_pw = st.text_input("New Password (leave blank to keep current)", type="password")
@@ -326,7 +302,6 @@ def home_page():
                 
                 if st.form_submit_button("Save Changes", use_container_width=True):
                     user = st.session_state.username
-                    
                     if st.session_state.users.get(user) != current_pw:
                         st.error("Current password is incorrect")
                     else:
@@ -338,7 +313,6 @@ def home_page():
                             else:
                                 st.session_state.users[user] = new_pw
                                 st.success("Password updated successfully!")
-                        
                         if new_username and new_username != user:
                             if new_username in st.session_state.users:
                                 st.error("That username is already taken")
@@ -369,7 +343,6 @@ def home_page():
                 st.warning("Only the Administrator can access this panel.")
             else:
                 st.markdown("#### Admin Panel")
-                
                 st.markdown("##### Pending Password Reset Requests")
                 if not st.session_state.pending_resets:
                     st.info("No pending reset requests.")
@@ -384,13 +357,11 @@ def home_page():
                                 st.rerun()
                 
                 st.markdown("---")
-                
                 st.markdown("##### Reset Any User Password")
                 with st.form("admin_reset_form"):
                     target_user = st.selectbox("Select user", options=list(st.session_state.users.keys()))
                     new_password = st.text_input("New Password", type="password")
                     confirm_new = st.text_input("Confirm New Password", type="password")
-                    
                     if st.form_submit_button("Reset Password", use_container_width=True):
                         if not new_password:
                             st.error("Please enter a new password")
@@ -405,7 +376,6 @@ def home_page():
                             st.success(f"Password for **{target_user}** has been reset!")
                 
                 st.markdown("---")
-                
                 st.markdown("##### Remove User")
                 with st.form("delete_user_form"):
                     users_to_delete = [u for u in st.session_state.users.keys() if u != "Administrator"]
@@ -421,7 +391,7 @@ def home_page():
                             st.rerun()
 
 # -------------------------------------------------
-# Shared Data Loader
+# FIXED Data Loader - Better branch detection
 # -------------------------------------------------
 def load_and_prepare(uploaded):
     xlsx = pd.ExcelFile(uploaded)
@@ -447,31 +417,58 @@ def load_and_prepare(uploaded):
             key = key + " | " + p
         return key, brand, group, model
     
+    # Month names to exclude
+    month_keywords = [
+        "jan", "feb", "mar", "apr", "may", "jun", 
+        "jul", "aug", "sep", "oct", "nov", "dec",
+        "january", "february", "march", "april", "june",
+        "july", "august", "september", "october", "november", "december",
+        "total", "unnamed"
+    ]
+    
+    def is_branch_column(col_name):
+        col = str(col_name).lower().strip()
+        if any(m in col for m in month_keywords):
+            return False
+        if col.replace(".", "").replace(" ", "").isdigit():
+            return False
+        return True
+    
+    # ---------- Sales ----------
     df_s = df_sales.copy()
     df_s["Product_Key"], brand_col, group_col, model_col = make_key(df_s)
+    
     fixed = ["Product_Key"]
     if brand_col: fixed.append(brand_col)
     if group_col: fixed.append(group_col)
     if model_col: fixed.append(model_col)
-    branches = [c for c in df_s.columns if c not in fixed and "total" not in str(c).lower() and not str(c).startswith("Unnamed")]
+    
+    branches = [c for c in df_s.columns if c not in fixed and is_branch_column(c)]
+    
     sales_long = df_s.melt(id_vars=fixed, value_vars=branches, var_name="Branch", value_name="Qty_Sold")
     sales_long["Qty_Sold"] = pd.to_numeric(sales_long["Qty_Sold"], errors="coerce").fillna(0)
     sales_long["Branch"] = sales_long["Branch"].astype(str).str.strip()
+    
     sales_agg = sales_long.groupby(["Product_Key", "Branch"], as_index=False).agg(
         Total_Sold=("Qty_Sold", "sum"),
         **{c: (c, "first") for c in [brand_col, group_col, model_col] if c}
     )
     sales_agg["Monthly_Avg"] = (sales_agg["Total_Sold"] / 8).round(2)
     
+    # ---------- Stocks ----------
     df_st = df_stock.copy()
     df_st["Product_Key"], _, _, _ = make_key(df_st)
+    
     fixed2 = ["Product_Key"]
-    branches2 = [c for c in df_st.columns if c not in fixed2 and "total" not in str(c).lower() and not str(c).startswith("Unnamed")]
+    branches2 = [c for c in df_st.columns if c not in fixed2 and is_branch_column(c)]
+    
     stock_long = df_st.melt(id_vars=fixed2, value_vars=branches2, var_name="Branch", value_name="Current_Stock")
     stock_long["Current_Stock"] = pd.to_numeric(stock_long["Current_Stock"], errors="coerce").fillna(0)
     stock_long["Branch"] = stock_long["Branch"].astype(str).str.strip()
+    
     stock_agg = stock_long.groupby(["Product_Key", "Branch"], as_index=False)["Current_Stock"].sum()
     
+    # Merge
     df = pd.merge(stock_agg, sales_agg, on=["Product_Key", "Branch"], how="outer")
     df["Current_Stock"] = df["Current_Stock"].fillna(0)
     df["Total_Sold"] = df["Total_Sold"].fillna(0)
@@ -484,20 +481,18 @@ def load_and_prepare(uploaded):
     return df, None
 
 # -------------------------------------------------
-# MODULE 1: Transfer Hub
+# MODULES (Transfer + Stock Health remain the same)
 # -------------------------------------------------
 def transfer_hub():
     col1, col2 = st.columns([5, 1])
     with col1:
         st.markdown("## 🚚📦 Transfer Hub")
-        st.caption("General inter-branch transfer recommendations")
     with col2:
         if st.button("← Back", use_container_width=True):
             st.session_state.module = None
             st.rerun()
    
     st.markdown("---")
-   
     uploaded = st.file_uploader("Upload Excel file (Sales + Stocks sheets)", type=["xlsx", "xls"], key="transfer_upload")
    
     if uploaded is None:
@@ -515,23 +510,12 @@ def transfer_hub():
     transfers = []
     
     for product, group in df.groupby("Product_Key"):
-        receivers = group[
-            (group["Monthly_Avg"] >= 0.5) &
-            (group["Current_Stock"] <= 3)
-        ].sort_values("Total_Sold", ascending=False)
-        
-        if len(receivers) == 0:
-            continue
+        receivers = group[(group["Monthly_Avg"] >= 0.5) & (group["Current_Stock"] <= 3)].sort_values("Total_Sold", ascending=False)
+        if len(receivers) == 0: continue
         
         receiver_branches = set(receivers["Branch"])
-        
-        donors = group[
-            (group["Current_Stock"] >= 2) &
-            (~group["Branch"].isin(receiver_branches))
-        ].sort_values(["Monthly_Avg", "Current_Stock"], ascending=[True, False])
-        
-        if len(donors) == 0:
-            continue
+        donors = group[(group["Current_Stock"] >= 2) & (~group["Branch"].isin(receiver_branches))].sort_values(["Monthly_Avg", "Current_Stock"], ascending=[True, False])
+        if len(donors) == 0: continue
         
         donors = donors.copy()
         donors["Available"] = (donors["Current_Stock"] - MIN_KEEP).clip(lower=0)
@@ -539,21 +523,14 @@ def transfer_hub():
         for _, rec in receivers.iterrows():
             target = max(2, int(round(rec["Monthly_Avg"] * 2)))
             needed = max(0, target - int(rec["Current_Stock"]))
-            if needed <= 0:
-                continue
-            
+            if needed <= 0: continue
             remaining = needed
             
             for idx, don in donors.iterrows():
-                if remaining <= 0:
-                    break
-                if don["Monthly_Avg"] >= rec["Monthly_Avg"] * 0.75:
-                    continue
-                
+                if remaining <= 0: break
+                if don["Monthly_Avg"] >= rec["Monthly_Avg"] * 0.75: continue
                 can_give = donors.at[idx, "Available"]
-                if can_give <= 0:
-                    continue
-                
+                if can_give <= 0: continue
                 give = min(remaining, can_give)
                 if give > 0:
                     transfers.append({
@@ -570,7 +547,6 @@ def transfer_hub():
                     remaining -= give
     
     report = pd.DataFrame(transfers)
-    
     if len(report) == 0:
         st.warning("No transfer available with current rules.")
     else:
@@ -581,33 +557,24 @@ def transfer_hub():
         output = BytesIO()
         with pd.ExcelWriter(output, engine="openpyxl") as writer:
             report.to_excel(writer, sheet_name="transfers", index=False)
-        st.download_button(
-            "⬇️ Download Transfer Report",
-            data=output.getvalue(),
-            file_name=f"Inter_Branch_Transfers_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True
-        )
+        st.download_button("⬇️ Download Transfer Report", data=output.getvalue(),
+                           file_name=f"Inter_Branch_Transfers_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
 
-# -------------------------------------------------
-# MODULE 2: Stock Health
-# -------------------------------------------------
 def stock_health():
     col1, col2 = st.columns([5, 1])
     with col1:
         st.markdown("## ❤️ Stock Health Analyzer")
-        st.caption("Overstock • Dead Stock • Stockouts • Slow-moving items")
     with col2:
         if st.button("← Back", use_container_width=True, key="health_back"):
             st.session_state.module = None
             st.rerun()
     
     st.markdown("---")
-    
     uploaded = st.file_uploader("Upload Excel file (Sales + Stocks sheets)", type=["xlsx", "xls"], key="health_upload")
     
     if uploaded is None:
-        st.info("Upload your Sales + Stocks Excel file to analyse inventory health.")
+        st.info("Upload your Sales + Stocks Excel file.")
         return
     
     df, error = load_and_prepare(uploaded)
@@ -618,12 +585,10 @@ def stock_health():
     df["Status"] = "Healthy"
     df.loc[df["Current_Stock"] <= 0, "Status"] = "Stockout"
     df.loc[(df["Current_Stock"] > 0) & (df["Total_Sold"] == 0), "Status"] = "Dead Stock"
-    
     df["Months_Cover"] = np.where(df["Monthly_Avg"] > 0, df["Current_Stock"] / df["Monthly_Avg"], 999)
     df.loc[(df["Status"] == "Healthy") & (df["Months_Cover"] > 4) & (df["Current_Stock"] > 5), "Status"] = "Overstock"
     df.loc[(df["Status"] == "Healthy") & (df["Months_Cover"] > 2.5) & (df["Current_Stock"] > 3), "Status"] = "Slow-moving"
     
-    st.markdown("### Key Metrics")
     k1, k2, k3, k4, k5 = st.columns(5)
     k1.metric("Total SKU-Branch", f"{len(df):,}")
     k2.metric("Stockouts", f"{(df['Status']=='Stockout').sum():,}")
@@ -631,31 +596,17 @@ def stock_health():
     k4.metric("Overstock", f"{(df['Status']=='Overstock').sum():,}")
     k5.metric("Slow-moving", f"{(df['Status']=='Slow-moving').sum():,}")
     
-    st.markdown("---")
-    
     tab1, tab2, tab3, tab4 = st.tabs(["🔴 Stockouts", "⚫ Dead Stock", "🟠 Overstock", "🟡 Slow-moving"])
-    
     display_cols = ["Branch", "Brand", "ItemGroup1", "Model No", "Current_Stock", "Total_Sold", "Monthly_Avg", "Months_Cover", "Status"]
     
     with tab1:
-        stockouts = df[df["Status"] == "Stockout"].sort_values("Total_Sold", ascending=False)
-        st.write(f"**{len(stockouts)}** items")
-        st.dataframe(stockouts[display_cols], use_container_width=True, height=400)
-    
+        st.dataframe(df[df["Status"]=="Stockout"][display_cols].sort_values("Total_Sold", ascending=False), use_container_width=True, height=400)
     with tab2:
-        dead = df[df["Status"] == "Dead Stock"].sort_values("Current_Stock", ascending=False)
-        st.write(f"**{len(dead)}** items • These have stock but zero sales")
-        st.dataframe(dead[display_cols], use_container_width=True, height=400)
-    
+        st.dataframe(df[df["Status"]=="Dead Stock"][display_cols].sort_values("Current_Stock", ascending=False), use_container_width=True, height=400)
     with tab3:
-        over = df[df["Status"] == "Overstock"].sort_values("Months_Cover", ascending=False)
-        st.write(f"**{len(over)}** items • More than 4 months of cover")
-        st.dataframe(over[display_cols], use_container_width=True, height=400)
-    
+        st.dataframe(df[df["Status"]=="Overstock"][display_cols].sort_values("Months_Cover", ascending=False), use_container_width=True, height=400)
     with tab4:
-        slow = df[df["Status"] == "Slow-moving"].sort_values("Months_Cover", ascending=False)
-        st.write(f"**{len(slow)}** items")
-        st.dataframe(slow[display_cols], use_container_width=True, height=400)
+        st.dataframe(df[df["Status"]=="Slow-moving"][display_cols].sort_values("Months_Cover", ascending=False), use_container_width=True, height=400)
     
     output = BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
@@ -665,22 +616,18 @@ def stock_health():
         df[df["Status"]=="Overstock"][display_cols].to_excel(writer, sheet_name="Overstock", index=False)
         df[df["Status"]=="Slow-moving"][display_cols].to_excel(writer, sheet_name="Slow_moving", index=False)
     
-    st.download_button(
-        "⬇️ Download Full Stock Health Report",
-        data=output.getvalue(),
-        file_name=f"Stock_Health_Report_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        use_container_width=True
-    )
+    st.download_button("⬇️ Download Full Stock Health Report", data=output.getvalue(),
+                       file_name=f"Stock_Health_Report_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+                       mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
 
 # -------------------------------------------------
-# MODULE 3: Smart LPO (FINAL LOGIC)
+# MODULE 3: Smart LPO (Corrected)
 # -------------------------------------------------
 def smart_lpo():
     col1, col2 = st.columns([5, 1])
     with col1:
         st.markdown("## 📄📋 Smart LPO Generator")
-        st.caption("Special rules for MDA/SDA + Space-consuming categories • LPO sheet = MIKA / SAMSUNG / ORYX / Bosch")
+        st.caption("LPO sheet = MIKA / SAMSUNG / ORYX / Bosch  |  Goods issue = Other brands")
     with col2:
         if st.button("← Back", use_container_width=True, key="lpo_back"):
             st.session_state.module = None
@@ -691,7 +638,7 @@ def smart_lpo():
     uploaded = st.file_uploader("Upload Excel file (Sales + Stocks sheets)", type=["xlsx", "xls"], key="lpo_upload")
     
     if uploaded is None:
-        st.info("Upload your Sales + Stocks Excel file to generate LPO suggestions.")
+        st.info("Upload your Sales + Stocks Excel file.")
         return
     
     df, error = load_and_prepare(uploaded)
@@ -699,10 +646,8 @@ def smart_lpo():
         st.error(error)
         return
     
-    # Settings
     st.markdown("### Ordering Settings")
     col_a, col_b, col_c = st.columns(3)
-    
     with col_a:
         target_months = st.slider("Target Months of Cover (normal items)", 0.5, 2.0, 1.0, 0.1)
     with col_b:
@@ -710,46 +655,27 @@ def smart_lpo():
     with col_c:
         safety_days = st.number_input("Min Days of Cover (normal)", 10, 45, 25)
     
-    # Calculate Days of Cover
-    df["Days_of_Cover"] = np.where(
-        df["Monthly_Avg"] > 0,
-        (df["Current_Stock"] / df["Monthly_Avg"] * 30).round(1),
-        999
-    )
+    df["Days_of_Cover"] = np.where(df["Monthly_Avg"] > 0, (df["Current_Stock"] / df["Monthly_Avg"] * 30).round(1), 999)
     
-    # Category flags
     item_group = df["ItemGroup1"].astype(str).str.upper()
-    
     df["Is_MDA_SDA"] = item_group.str.contains("MDA|SDA", na=False)
+    df["Is_Space_Consuming"] = item_group.str.contains("LDA|ELECTRONICS|BUILT-IN|BUILT IN|COMMERCIAL", na=False)
     
-    df["Is_Space_Consuming"] = item_group.str.contains(
-        "LDA|ELECTRONICS|BUILT-IN|BUILT IN|COMMERCIAL", na=False
-    )
-    
-    # Brands that go to "LPO" sheet
     lpo_brands = ["MIKA", "SAMSUNG", "ORYX", "BOSCH"]
     df["Is_LPO_Brand"] = df["Brand"].astype(str).str.upper().isin(lpo_brands)
     
-    # Target stock for normal items
     df["Target_Stock"] = (df["Monthly_Avg"] * target_months).round(0)
     
-    # ---------- ORDERING LOGIC ----------
     suggested = []
-    
     for idx, row in df.iterrows():
         order_qty = 0
         
-        # 1. Space-consuming categories (LDA, Electronics, Built-in, Commercial)
         if row["Is_Space_Consuming"]:
             if row["Monthly_Avg"] >= 3.0 and row["Current_Stock"] <= 1:
-                order_qty = 1   # Max 1 piece only
-        
-        # 2. MDA / SDA items (more proactive)
+                order_qty = 1
         elif row["Is_MDA_SDA"]:
             if row["Monthly_Avg"] >= 0.8 and row["Current_Stock"] <= 2:
                 order_qty = max(1, int(round(row["Monthly_Avg"] * 1.3 - row["Current_Stock"])))
-        
-        # 3. Normal items
         else:
             if (row["Monthly_Avg"] >= min_sales_normal and 
                 row["Days_of_Cover"] < safety_days and 
@@ -760,21 +686,15 @@ def smart_lpo():
     
     df["Suggested_Order"] = suggested
     
-    # Final list
     lpo = df[df["Suggested_Order"] > 0].copy()
     lpo = lpo.sort_values(["Brand", "Branch", "Suggested_Order"], ascending=[True, True, False])
     
-    # Split sheets
-    lpo_sheet = lpo[lpo["Is_LPO_Brand"]].copy()          # MIKA, SAMSUNG, ORYX, Bosch
-    goods_issue = lpo[~lpo["Is_LPO_Brand"]].copy()       # Everything else
+    lpo_sheet = lpo[lpo["Is_LPO_Brand"]].copy()
+    goods_issue = lpo[~lpo["Is_LPO_Brand"]].copy()
     
-    st.success(f"Total recommendations: **{len(lpo)}**  |  LPO sheet: {len(lpo_sheet)}  |  Goods issue: {len(goods_issue)}")
+    st.success(f"Total: **{len(lpo)}**  |  LPO sheet: {len(lpo_sheet)}  |  Goods issue: {len(goods_issue)}")
     
-    display_cols = [
-        "Branch", "Brand", "ItemGroup1", "Model No",
-        "Current_Stock", "Monthly_Avg", "Days_of_Cover",
-        "Suggested_Order"
-    ]
+    display_cols = ["Branch", "Brand", "ItemGroup1", "Model No", "Current_Stock", "Monthly_Avg", "Days_of_Cover", "Suggested_Order"]
     
     tab1, tab2 = st.tabs(["LPO (MIKA / SAMSUNG / ORYX / Bosch)", "Goods issue (Other brands)"])
     
@@ -790,7 +710,6 @@ def smart_lpo():
         else:
             st.dataframe(goods_issue[display_cols], use_container_width=True, height=420)
     
-    # Download
     output = BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         if len(lpo_sheet) > 0:
