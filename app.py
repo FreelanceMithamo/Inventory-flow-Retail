@@ -484,243 +484,6 @@ def load_and_prepare(uploaded):
     return df, None
 
 # -------------------------------------------------
-# SMART LPO - BACK STORE SALES HELPERS
-# -------------------------------------------------
-def _normalise_col_name(value):
-    return re.sub(r"[^a-z0-9]+", "", str(value).strip().lower())
-
-
-def _find_backstore_sales_sheet(xlsx):
-    """
-    Find the separate back-store sales sheet by its structure, not merely
-    by its name.
-
-    Required structure:
-        Branch | Brand | ItemGroup | ModelNo |
-        JAN ... AUG | Total sales
-
-    IMPORTANT:
-        Branch is a row field.
-        JAN-AUG are sales-history fields.
-        JAN-AUG are NEVER treated as branches.
-    """
-    for sheet in xlsx.sheet_names:
-        try:
-            sample = pd.read_excel(xlsx, sheet_name=sheet, nrows=5)
-        except Exception:
-            continue
-
-        cols = {_normalise_col_name(c): c for c in sample.columns}
-
-        branch_col = cols.get("branch") or cols.get("showroom")
-        brand_col = cols.get("brand")
-        group_col = (
-            cols.get("itemgroup")
-            or cols.get("group")
-            or cols.get("category")
-        )
-        model_col = (
-            cols.get("modelno")
-            or cols.get("model")
-            or cols.get("sku")
-        )
-
-        month_names = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug"]
-        months_present = [
-            cols.get(m) for m in month_names if cols.get(m) is not None
-        ]
-
-        if (
-            branch_col is not None
-            and brand_col is not None
-            and group_col is not None
-            and model_col is not None
-            and len(months_present) >= 4
-        ):
-            return sheet
-
-    return None
-
-
-def _prepare_backstore_sales(xlsx):
-    """
-    Read branch-row/month-column back-store sales.
-
-    Returns one row per Product_Key + Branch with:
-      - Total sellout
-      - 8-month average monthly sellout
-      - monthly Jan-Aug history for visibility
-    """
-    sheet = _find_backstore_sales_sheet(xlsx)
-    if sheet is None:
-        return None, None
-
-    raw = pd.read_excel(xlsx, sheet_name=sheet).copy()
-
-    def find_col(options):
-        normalized = {
-            _normalise_col_name(c): c for c in raw.columns
-        }
-        for option in options:
-            if option in normalized:
-                return normalized[option]
-        return None
-
-    branch_col = find_col(["branch", "showroom"])
-    brand_col = find_col(["brand"])
-    group_col = find_col(["itemgroup", "group", "category"])
-    model_col = find_col(["modelno", "model", "sku"])
-    total_col = find_col(["totalsales", "totalsale"])
-
-    month_map = {}
-    normalized = {
-        _normalise_col_name(c): c for c in raw.columns
-    }
-    for month in ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug"]:
-        if month in normalized:
-            month_map[month.upper()] = normalized[month]
-
-    if not all([branch_col, brand_col, group_col, model_col]):
-        return None, (
-            f"Back-store sales sheet '{sheet}' does not contain the required "
-            "Branch, Brand, ItemGroup and ModelNo columns."
-        )
-
-    if len(month_map) < 4:
-        return None, (
-            f"Back-store sales sheet '{sheet}' needs at least four month columns "
-            "from JAN to AUG."
-        )
-
-    result = pd.DataFrame({
-        "Branch": raw[branch_col].astype(str).str.strip(),
-        "Brand": raw[brand_col].astype(str).str.strip(),
-        "ItemGroup1": raw[group_col].astype(str).str.strip(),
-        "Model No": raw[model_col].astype(str).str.strip()
-    })
-
-    month_cols = []
-    for month, source_col in month_map.items():
-        result[month] = pd.to_numeric(
-            raw[source_col], errors="coerce"
-        ).fillna(0)
-        month_cols.append(month)
-
-    calculated_total = result[month_cols].sum(axis=1)
-
-    if total_col is not None:
-        supplied_total = pd.to_numeric(
-            raw[total_col], errors="coerce"
-        ).fillna(0)
-
-        # Use supplied Total sales where present; otherwise calculate it
-        # directly from JAN-AUG.
-        result["Backstore_Total_Sold"] = np.where(
-            supplied_total != 0,
-            supplied_total,
-            calculated_total
-        )
-    else:
-        result["Backstore_Total_Sold"] = calculated_total
-
-    # JAN-AUG are used to calculate the average monthly sellout.
-    result["Backstore_Monthly_Avg"] = (
-        calculated_total / len(month_cols)
-    ).round(2)
-
-    result["Product_Key"] = (
-        result["Brand"].astype(str).str.strip()
-        + " | "
-        + result["ItemGroup1"].astype(str).str.strip()
-        + " | "
-        + result["Model No"].astype(str).str.strip()
-    )
-
-    # In case the back-store report contains duplicate rows for the same
-    # branch/SKU, combine them instead of producing duplicate LPO lines.
-    agg_map = {
-        "Backstore_Total_Sold": "sum",
-        "Backstore_Monthly_Avg": "sum"
-    }
-    for month in month_cols:
-        agg_map[month] = "sum"
-
-    result = (
-        result.groupby(
-            ["Product_Key", "Branch", "Brand", "ItemGroup1", "Model No"],
-            as_index=False
-        )
-        .agg(agg_map)
-    )
-
-    return result, None
-
-
-def _is_large_backstore_group(value):
-    """
-    Large-item groups that use the separate back-store sales sheet and the
-    1-piece maximum virtual-stock rule.
-    """
-    text = re.sub(r"\s+", " ", str(value).strip().lower())
-
-    # Exact / keyword-aware matching allows common variants such as:
-    # "Built-in Range", "Built in Range", "Commercial Appliance", etc.
-    return bool(
-        re.search(r"\blda\b", text)
-        or "electronics" in text
-        or "built in range" in text
-        or "built-in range" in text
-        or "commercial appliance" in text
-    )
-
-
-def _load_lpo_data(uploaded):
-    """
-    LPO-only loader.
-
-    The original Sales + Stocks data is loaded exactly as before.
-    The separate Back Store Sales sheet is then merged ONLY for:
-      LDA / Electronics / Built-in Range / Commercial Appliances.
-
-    Transfer Hub and Stock Health continue to use the original
-    load_and_prepare() untouched.
-    """
-    xlsx = pd.ExcelFile(uploaded)
-
-    df, error = load_and_prepare(uploaded)
-    if error:
-        return None, None, error
-
-    backstore, back_error = _prepare_backstore_sales(xlsx)
-
-    if back_error:
-        return df, None, back_error
-
-    if backstore is None:
-        return df, None, None
-
-    # Keep stock/sales branch identity intact. Back-store Branch is a real
-    # branch value; JAN-AUG remain month columns only.
-    df = df.merge(
-        backstore.drop(columns=["Brand", "ItemGroup1", "Model No"]),
-        on=["Product_Key", "Branch"],
-        how="left"
-    )
-
-    df["Backstore_Total_Sold"] = df["Backstore_Total_Sold"].fillna(0)
-    df["Backstore_Monthly_Avg"] = df["Backstore_Monthly_Avg"].fillna(0)
-
-    for month in ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG"]:
-        if month in df.columns:
-            df[month] = df[month].fillna(0)
-
-    df["Is_Backstore_Large_Item"] = df["ItemGroup1"].apply(
-        _is_large_backstore_group
-    )
-
-    return df, backstore, None
-
-# -------------------------------------------------
 # MODULE 1: Transfer Hub
 # -------------------------------------------------
 def transfer_hub():
@@ -911,396 +674,144 @@ def stock_health():
     )
 
 # -------------------------------------------------
-# -------------------------------------------------
-# MODULE 3: Smart LPO
+# MODULE 3: Smart LPO (FINAL LOGIC)
 # -------------------------------------------------
 def smart_lpo():
     col1, col2 = st.columns([5, 1])
-
     with col1:
         st.markdown("## 📄📋 Smart LPO Generator")
-        st.caption(
-            "Original SDA/MDA replenishment + virtual-stock logic for large back-store items"
-        )
-
+        st.caption("Special rules for MDA/SDA + Space-consuming categories • LPO sheet = MIKA / SAMSUNG / ORYX / Bosch")
     with col2:
         if st.button("← Back", use_container_width=True, key="lpo_back"):
             st.session_state.module = None
             st.rerun()
-
+    
     st.markdown("---")
-
-    uploaded = st.file_uploader(
-        "Upload Excel file (Sales + Stocks + Back Store Sales)",
-        type=["xlsx", "xls"],
-        key="lpo_upload"
-    )
-
+    
+    uploaded = st.file_uploader("Upload Excel file (Sales + Stocks sheets)", type=["xlsx", "xls"], key="lpo_upload")
+    
     if uploaded is None:
-        st.info(
-            "Upload your workbook containing the original Sales and Stocks sheets. "
-            "For LDA / Electronics / Built-in Range / Commercial Appliances, also "
-            "include the separate Back Store Sales sheet."
-        )
+        st.info("Upload your Sales + Stocks Excel file to generate LPO suggestions.")
         return
-
-    df, backstore, error = _load_lpo_data(uploaded)
-
+    
+    df, error = load_and_prepare(uploaded)
     if error:
         st.error(error)
         return
-
-    if backstore is None:
-        st.warning(
-            "No separate Back Store Sales sheet was detected. "
-            "The original replenishment logic will still work, but LDA / Electronics / "
-            "Built-in Range / Commercial Appliances cannot use the virtual-sales rule "
-            "until the Back Store Sales sheet is included."
-        )
-
+    
+    # Settings
     st.markdown("### Ordering Settings")
-
     col_a, col_b, col_c = st.columns(3)
-
+    
     with col_a:
-        target_months = st.slider(
-            "Target Months of Cover",
-            min_value=0.5,
-            max_value=2.0,
-            value=1.0,
-            step=0.1,
-            help="Original StockFlow target logic for normal items."
-        )
-
+        target_months = st.slider("Target Months of Cover (normal items)", 0.5, 2.0, 1.0, 0.1)
     with col_b:
-        min_sales = st.number_input(
-            "Minimum Monthly Sales",
-            min_value=0.0,
-            max_value=20.0,
-            value=1.0,
-            step=0.5,
-            help="Original StockFlow minimum monthly sales threshold."
-        )
-
+        min_sales_normal = st.number_input("Min Monthly Sales (normal)", 0.0, 20.0, 0.8, 0.1)
     with col_c:
-        safety_days = st.number_input(
-            "Minimum Days of Cover before ordering",
-            min_value=7,
-            max_value=45,
-            value=20,
-            help="Original StockFlow safety-days trigger."
-        )
-
-    # -------------------------------------------------
-    # ORIGINAL STOCKFLOW LOGIC
-    #
-    # This remains the rule for SDA Primary/Secondary, MDA, Power Protection,
-    # and all other ordinary categories.
-    #
-    # No 4-month consecutive-sales rule is applied.
-    # -------------------------------------------------
+        safety_days = st.number_input("Min Days of Cover (normal)", 10, 45, 25)
+    
+    # Calculate Days of Cover
     df["Days_of_Cover"] = np.where(
         df["Monthly_Avg"] > 0,
         (df["Current_Stock"] / df["Monthly_Avg"] * 30).round(1),
         999
     )
-
-    df["Target_Stock"] = (
-        df["Monthly_Avg"] * target_months
-    ).round(0)
-
-    normal_order = np.where(
-        (df["Current_Stock"] < df["Target_Stock"]) &
-        (df["Days_of_Cover"] < safety_days) &
-        (df["Monthly_Avg"] >= min_sales),
-        (df["Target_Stock"] - df["Current_Stock"])
-        .clip(lower=0)
-        .astype(int),
-        0
+    
+    # Category flags
+    item_group = df["ItemGroup1"].astype(str).str.upper()
+    
+    df["Is_MDA_SDA"] = item_group.str.contains("MDA|SDA", na=False)
+    
+    df["Is_Space_Consuming"] = item_group.str.contains(
+        "LDA|ELECTRONICS|BUILT-IN|BUILT IN|COMMERCIAL", na=False
     )
-
-    # -------------------------------------------------
-    # LARGE BACK-STORE ITEM LOGIC
-    #
-    # Applies only to:
-    #   LDA
-    #   Electronics
-    #   Built-in Range
-    #   Commercial Appliances
-    #
-    # The separate Back Store Sales sheet has:
-    #   Branch | Brand | ItemGroup | ModelNo | JAN...AUG | Total sales
-    #
-    # Branch is the replenishment destination.
-    # JAN-AUG are sales history only.
-    #
-    # If the branch has sold the item (Total sales > 0) and physical stock
-    # is zero, order exactly 1 pc.
-    #
-    # Maximum order for these large items is ALWAYS 1 pc.
-    # -------------------------------------------------
-    backstore_order = np.where(
-        df["Is_Backstore_Large_Item"] &
-        (df["Backstore_Total_Sold"] > 0) &
-        (df["Current_Stock"] <= 0),
-        1,
-        0
-    )
-
-    # Combine the two engines:
-    # - normal categories use original logic
-    # - large back-store categories use their virtual-stock rule
-    # Do NOT stack both quantities for the same large item.
-    df["Suggested_Order"] = np.where(
-        df["Is_Backstore_Large_Item"],
-        backstore_order,
-        normal_order
-    ).astype(int)
-
-    df["Order_Reason"] = np.select(
-        [
-            df["Is_Backstore_Large_Item"] & (df["Suggested_Order"] > 0),
-            (~df["Is_Backstore_Large_Item"]) & (df["Suggested_Order"] > 0)
-        ],
-        [
-            "Back-store sellout — virtual stock replenishment (max 1 pc)",
-            "Original cumulative-average replenishment"
-        ],
-        default=""
-    )
-
-    # -------------------------------------------------
-    # Only lines requiring an order
-    # -------------------------------------------------
+    
+    # Brands that go to "LPO" sheet
+    lpo_brands = ["MIKA", "SAMSUNG", "ORYX", "BOSCH"]
+    df["Is_LPO_Brand"] = df["Brand"].astype(str).str.upper().isin(lpo_brands)
+    
+    # Target stock for normal items
+    df["Target_Stock"] = (df["Monthly_Avg"] * target_months).round(0)
+    
+    # ---------- ORDERING LOGIC ----------
+    suggested = []
+    
+    for idx, row in df.iterrows():
+        order_qty = 0
+        
+        # 1. Space-consuming categories (LDA, Electronics, Built-in, Commercial)
+        if row["Is_Space_Consuming"]:
+            if row["Monthly_Avg"] >= 3.0 and row["Current_Stock"] <= 1:
+                order_qty = 1   # Max 1 piece only
+        
+        # 2. MDA / SDA items (more proactive)
+        elif row["Is_MDA_SDA"]:
+            if row["Monthly_Avg"] >= 0.8 and row["Current_Stock"] <= 2:
+                order_qty = max(1, int(round(row["Monthly_Avg"] * 1.3 - row["Current_Stock"])))
+        
+        # 3. Normal items
+        else:
+            if (row["Monthly_Avg"] >= min_sales_normal and 
+                row["Days_of_Cover"] < safety_days and 
+                row["Current_Stock"] < row["Target_Stock"]):
+                order_qty = max(0, int(row["Target_Stock"] - row["Current_Stock"]))
+        
+        suggested.append(order_qty)
+    
+    df["Suggested_Order"] = suggested
+    
+    # Final list
     lpo = df[df["Suggested_Order"] > 0].copy()
-
-    lpo = lpo.sort_values(
-        ["Branch", "Suggested_Order", "Monthly_Avg"],
-        ascending=[True, False, False]
-    ).reset_index(drop=True)
-
-    # -------------------------------------------------
-    # BRAND ROUTING
-    #
-    # Formal LPO:
-    #   MIKA + Samsung + Bosch + Oryx
-    #
-    # Goods issue:
-    #   every other brand
-    # -------------------------------------------------
-    LPO_BRANDS = {"MIKA", "SAMSUNG", "BOSCH", "ORYX"}
-
-    lpo_brand_mask = (
-        lpo["Brand"]
-        .astype(str)
-        .str.strip()
-        .str.upper()
-        .isin(LPO_BRANDS)
-    )
-
-    lpo_formal = lpo[lpo_brand_mask].copy()
-    goods_issue = lpo[~lpo_brand_mask].copy()
-
-    if len(lpo) == 0:
-        st.success(
-            "No orders needed right now. Most branches have sufficient stock based on current settings."
-        )
-    else:
-        st.success(
-            f"**{len(lpo)}** order lines generated across **{lpo['Branch'].nunique()}** branches"
-        )
-
-    # -------------------------------------------------
-    # Summary by branch
-    # -------------------------------------------------
-    st.markdown("### Summary by Branch")
-
-    if len(lpo) > 0:
-        branch_summary = (
-            lpo.groupby("Branch")
-            .agg(
-                Items_to_Order=("Suggested_Order", "count"),
-                Total_Units=("Suggested_Order", "sum")
-            )
-            .sort_values("Total_Units", ascending=False)
-            .reset_index()
-        )
-
-        st.dataframe(
-            branch_summary,
-            use_container_width=True
-        )
-    else:
-        branch_summary = pd.DataFrame(
-            columns=["Branch", "Items_to_Order", "Total_Units"]
-        )
-        st.info("No branches currently need replenishment.")
-
-    # -------------------------------------------------
-    # Detailed LPO tables
-    # -------------------------------------------------
-    st.markdown("### Detailed Order Suggestions")
-
-    month_cols = [
-        c for c in ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG"]
-        if c in lpo.columns
-    ]
-
+    lpo = lpo.sort_values(["Brand", "Branch", "Suggested_Order"], ascending=[True, True, False])
+    
+    # Split sheets
+    lpo_sheet = lpo[lpo["Is_LPO_Brand"]].copy()          # MIKA, SAMSUNG, ORYX, Bosch
+    goods_issue = lpo[~lpo["Is_LPO_Brand"]].copy()       # Everything else
+    
+    st.success(f"Total recommendations: **{len(lpo)}**  |  LPO sheet: {len(lpo_sheet)}  |  Goods issue: {len(goods_issue)}")
+    
     display_cols = [
-        "Branch",
-        "Brand",
-        "ItemGroup1",
-        "Model No",
-        "Current_Stock",
-        "Monthly_Avg",
-        "Backstore_Total_Sold",
-        "Backstore_Monthly_Avg",
-    ] + month_cols + [
-        "Days_of_Cover",
-        "Target_Stock",
-        "Suggested_Order",
-        "Order_Reason"
+        "Branch", "Brand", "ItemGroup1", "Model No",
+        "Current_Stock", "Monthly_Avg", "Days_of_Cover",
+        "Suggested_Order"
     ]
-
-    tab_lpo, tab_goods = st.tabs([
-        f"📄 LPO — MIKA / Samsung / Bosch / Oryx ({len(lpo_formal)})",
-        f"📦 Goods issue — Other Brands ({len(goods_issue)})"
-    ])
-
-    with tab_lpo:
-        if len(lpo_formal) > 0:
-            st.dataframe(
-                lpo_formal[display_cols].style.format({
-                    "Monthly_Avg": "{:.2f}",
-                    "Backstore_Monthly_Avg": "{:.2f}",
-                    "Days_of_Cover": "{:.1f}"
-                }),
-                use_container_width=True,
-                height=450
-            )
+    
+    tab1, tab2 = st.tabs(["LPO (MIKA / SAMSUNG / ORYX / Bosch)", "Goods issue (Other brands)"])
+    
+    with tab1:
+        if len(lpo_sheet) == 0:
+            st.info("No items for the LPO sheet.")
         else:
-            st.info("No MIKA / Samsung / Bosch / Oryx items require ordering.")
-
-    with tab_goods:
-        if len(goods_issue) > 0:
-            st.dataframe(
-                goods_issue[display_cols].style.format({
-                    "Monthly_Avg": "{:.2f}",
-                    "Backstore_Monthly_Avg": "{:.2f}",
-                    "Days_of_Cover": "{:.1f}"
-                }),
-                use_container_width=True,
-                height=450
-            )
+            st.dataframe(lpo_sheet[display_cols], use_container_width=True, height=420)
+    
+    with tab2:
+        if len(goods_issue) == 0:
+            st.info("No items for Goods issue sheet.")
         else:
-            st.info("No other-brand items require a Goods issue.")
-
-    # -------------------------------------------------
-    # Downloadable workbook
-    #
-    # LPO sheet:
-    #   MIKA + Samsung + Bosch + Oryx
-    #
-    # Goods issue sheet:
-    #   all other brands
-    #
-    # Branch is always the replenishment destination.
-    # JAN-AUG remain sales-history columns.
-    # -------------------------------------------------
+            st.dataframe(goods_issue[display_cols], use_container_width=True, height=420)
+    
+    # Download
     output = BytesIO()
-
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        export_cols = display_cols
-
-        if len(lpo_formal) > 0:
-            lpo_formal[export_cols].to_excel(
-                writer,
-                sheet_name="LPO",
-                index=False
-            )
+        if len(lpo_sheet) > 0:
+            lpo_sheet[display_cols].to_excel(writer, sheet_name="LPO", index=False)
         else:
-            pd.DataFrame({
-                "Message": [
-                    "No MIKA / Samsung / Bosch / Oryx orders recommended"
-                ]
-            }).to_excel(
-                writer,
-                sheet_name="LPO",
-                index=False
-            )
-
+            pd.DataFrame({"Message": ["No recommendations"]}).to_excel(writer, sheet_name="LPO", index=False)
+        
         if len(goods_issue) > 0:
-            goods_issue[export_cols].to_excel(
-                writer,
-                sheet_name="Goods issue",
-                index=False
-            )
+            goods_issue[display_cols].to_excel(writer, sheet_name="Goods issue", index=False)
         else:
-            pd.DataFrame({
-                "Message": ["No other-brand orders recommended"]
-            }).to_excel(
-                writer,
-                sheet_name="Goods issue",
-                index=False
-            )
-
-        branch_summary.to_excel(
-            writer,
-            sheet_name="Branch_Summary",
-            index=False
-        )
-
-    # Basic Excel formatting.
-    try:
-        from openpyxl import load_workbook
-        from openpyxl.styles import Font, PatternFill, Alignment
-        from openpyxl.utils import get_column_letter
-
-        output.seek(0)
-        wb = load_workbook(output)
-
-        header_fill = PatternFill("solid", fgColor="1F4E78")
-        header_font = Font(color="FFFFFF", bold=True)
-
-        for ws in wb.worksheets:
-            ws.freeze_panes = "A2"
-
-            for cell in ws[1]:
-                cell.fill = header_fill
-                cell.font = header_font
-                cell.alignment = Alignment(
-                    horizontal="center",
-                    vertical="center"
-                )
-
-            for col_idx in range(1, ws.max_column + 1):
-                letter = get_column_letter(col_idx)
-                max_len = 0
-
-                for cell in ws[letter]:
-                    value = "" if cell.value is None else str(cell.value)
-                    max_len = max(max_len, len(value))
-
-                ws.column_dimensions[letter].width = min(
-                    max(max_len + 2, 10),
-                    32
-                )
-
-        output = BytesIO()
-        wb.save(output)
-        output.seek(0)
-
-    except Exception:
-        output.seek(0)
-
+            pd.DataFrame({"Message": ["No recommendations"]}).to_excel(writer, sheet_name="Goods issue", index=False)
+    
     st.download_button(
-        "⬇️ Download Smart LPO Excel",
+        "⬇️ Download Smart LPO Report",
         data=output.getvalue(),
         file_name=f"Smart_LPO_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         use_container_width=True
     )
 
+# -------------------------------------------------
 # Router
 # -------------------------------------------------
 if not st.session_state.authenticated:
