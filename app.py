@@ -395,7 +395,7 @@ def home_page():
                             st.rerun()
 
 # -------------------------------------------------
-# CORRECTED Data Loader (matches your actual file structure)
+# CORRECTED Data Loader (excludes "Total" properly)
 # -------------------------------------------------
 def load_and_prepare(uploaded):
     xlsx = pd.ExcelFile(uploaded)
@@ -409,7 +409,7 @@ def load_and_prepare(uploaded):
     df_sales = pd.read_excel(xlsx, sheet_name=sales_sheet)
     df_stock = pd.read_excel(xlsx, sheet_name=stock_sheet)
     
-    # ---------- SALES (Long format: Branch | Brand | ItemGroup | ModelNo | Total sales) ----------
+    # ---------- SALES (Long format) ----------
     sales_cols = {str(c).lower().strip(): c for c in df_sales.columns}
     
     branch_col = next((sales_cols[k] for k in sales_cols if "branch" in k), None)
@@ -451,7 +451,13 @@ def load_and_prepare(uploaded):
     if s_group: id_vars.append(s_group)
     if s_model: id_vars.append(s_model)
     
-    branch_cols = [c for c in df_stock.columns if c not in id_vars]
+    # CRITICAL FIX: Exclude any column that contains "total"
+    branch_cols = [
+        c for c in df_stock.columns 
+        if c not in id_vars 
+        and "total" not in str(c).lower()
+        and not str(c).lower().startswith("unnamed")
+    ]
     
     stock_long = df_stock.melt(
         id_vars=id_vars,
@@ -462,6 +468,9 @@ def load_and_prepare(uploaded):
     
     stock_long["Current_Stock"] = pd.to_numeric(stock_long["Current_Stock"], errors="coerce").fillna(0)
     stock_long["Branch"] = stock_long["Branch"].astype(str).str.strip()
+    
+    # Extra safety: remove any remaining "Total" rows
+    stock_long = stock_long[~stock_long["Branch"].str.lower().str.contains("total", na=False)]
     
     rename_map = {s_brand: "Brand", s_model: "Model No"}
     if s_group:
@@ -481,12 +490,15 @@ def load_and_prepare(uploaded):
         stock_long["Model No"]
     )
     
-    stock_agg = stock_long.groupby(["Product_Key", "Branch"], as_index=False)["Current_Stock"].sum()
+    stock_agg = stock_long.groupby(
+        ["Product_Key", "Branch", "Brand", "ItemGroup1", "Model No"], 
+        as_index=False
+    )["Current_Stock"].sum()
     
     # ---------- Merge ----------
     df = pd.merge(
         stock_agg,
-        sales_agg[["Product_Key", "Branch", "Brand", "ItemGroup1", "Model No", "Total_Sold", "Monthly_Avg"]],
+        sales_agg[["Product_Key", "Branch", "Total_Sold", "Monthly_Avg"]],
         on=["Product_Key", "Branch"],
         how="outer"
     )
@@ -495,9 +507,21 @@ def load_and_prepare(uploaded):
     df["Total_Sold"] = df["Total_Sold"].fillna(0)
     df["Monthly_Avg"] = df["Monthly_Avg"].fillna(0)
     
-    df["Brand"] = df["Brand"].fillna("")
-    df["ItemGroup1"] = df["ItemGroup1"].fillna("")
-    df["Model No"] = df["Model No"].fillna("")
+    # Recover product info if missing
+    mask = (df["Brand"].isna()) | (df["Brand"] == "")
+    if mask.any():
+        recovered = df.loc[mask, "Product_Key"].str.split(" \| ", expand=True)
+        if recovered.shape[1] >= 3:
+            df.loc[mask, "Brand"] = recovered[0]
+            df.loc[mask, "ItemGroup1"] = recovered[1]
+            df.loc[mask, "Model No"] = recovered[2]
+    
+    df["Brand"] = df["Brand"].fillna("").astype(str)
+    df["ItemGroup1"] = df["ItemGroup1"].fillna("").astype(str)
+    df["Model No"] = df["Model No"].fillna("").astype(str)
+    
+    # Final safety: remove any "Total" branch
+    df = df[~df["Branch"].str.lower().str.contains("total", na=False)]
     
     return df, None
 
@@ -508,12 +532,14 @@ def transfer_hub():
     col1, col2 = st.columns([5, 1])
     with col1:
         st.markdown("## 🚚📦 Transfer Hub")
+        st.caption("Inter-branch transfer recommendations")
     with col2:
         if st.button("← Back", use_container_width=True):
             st.session_state.module = None
             st.rerun()
    
     st.markdown("---")
+   
     uploaded = st.file_uploader("Upload Excel file (Sales + Stocks sheets)", type=["xlsx", "xls"], key="transfer_upload")
    
     if uploaded is None:
@@ -531,12 +557,23 @@ def transfer_hub():
     transfers = []
     
     for product, group in df.groupby("Product_Key"):
-        receivers = group[(group["Monthly_Avg"] >= 0.5) & (group["Current_Stock"] <= 3)].sort_values("Total_Sold", ascending=False)
-        if len(receivers) == 0: continue
+        receivers = group[
+            (group["Monthly_Avg"] >= 0.5) & 
+            (group["Current_Stock"] <= 3)
+        ].sort_values("Total_Sold", ascending=False)
+        
+        if len(receivers) == 0:
+            continue
         
         receiver_branches = set(receivers["Branch"])
-        donors = group[(group["Current_Stock"] >= 2) & (~group["Branch"].isin(receiver_branches))].sort_values(["Monthly_Avg", "Current_Stock"], ascending=[True, False])
-        if len(donors) == 0: continue
+        
+        donors = group[
+            (group["Current_Stock"] >= 2) &
+            (~group["Branch"].isin(receiver_branches))
+        ].sort_values(["Monthly_Avg", "Current_Stock"], ascending=[True, False])
+        
+        if len(donors) == 0:
+            continue
         
         donors = donors.copy()
         donors["Available"] = (donors["Current_Stock"] - MIN_KEEP).clip(lower=0)
@@ -544,14 +581,21 @@ def transfer_hub():
         for _, rec in receivers.iterrows():
             target = max(2, int(round(rec["Monthly_Avg"] * 2)))
             needed = max(0, target - int(rec["Current_Stock"]))
-            if needed <= 0: continue
+            if needed <= 0:
+                continue
+            
             remaining = needed
             
             for idx, don in donors.iterrows():
-                if remaining <= 0: break
-                if don["Monthly_Avg"] >= rec["Monthly_Avg"] * 0.75: continue
+                if remaining <= 0:
+                    break
+                if don["Monthly_Avg"] >= rec["Monthly_Avg"] * 0.75:
+                    continue
+                
                 can_give = donors.at[idx, "Available"]
-                if can_give <= 0: continue
+                if can_give <= 0:
+                    continue
+                
                 give = min(remaining, can_give)
                 if give > 0:
                     transfers.append({
@@ -568,19 +612,29 @@ def transfer_hub():
                     remaining -= give
     
     report = pd.DataFrame(transfers)
+    
     if len(report) == 0:
         st.warning("No transfer available with current rules.")
     else:
-        report = report.sort_values(by=["Receiver qty sold period", "Donor transfer Qty"], ascending=[False, False]).reset_index(drop=True)
+        report = report.sort_values(
+            by=["Receiver qty sold period", "Donor transfer Qty"],
+            ascending=[False, False]
+        ).reset_index(drop=True)
+        
         st.success(f"**{len(report)}** recommendations • Total units: **{report['Donor transfer Qty'].sum()}**")
         st.dataframe(report, use_container_width=True, height=480)
         
         output = BytesIO()
         with pd.ExcelWriter(output, engine="openpyxl") as writer:
             report.to_excel(writer, sheet_name="transfers", index=False)
-        st.download_button("⬇️ Download Transfer Report", data=output.getvalue(),
-                           file_name=f"Inter_Branch_Transfers_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
-                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+        
+        st.download_button(
+            "⬇️ Download Transfer Report",
+            data=output.getvalue(),
+            file_name=f"Inter_Branch_Transfers_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True
+        )
 
 # -------------------------------------------------
 # MODULE 2: Stock Health
@@ -595,6 +649,7 @@ def stock_health():
             st.rerun()
     
     st.markdown("---")
+    
     uploaded = st.file_uploader("Upload Excel file (Sales + Stocks sheets)", type=["xlsx", "xls"], key="health_upload")
     
     if uploaded is None:
@@ -609,6 +664,7 @@ def stock_health():
     df["Status"] = "Healthy"
     df.loc[df["Current_Stock"] <= 0, "Status"] = "Stockout"
     df.loc[(df["Current_Stock"] > 0) & (df["Total_Sold"] == 0), "Status"] = "Dead Stock"
+    
     df["Months_Cover"] = np.where(df["Monthly_Avg"] > 0, df["Current_Stock"] / df["Monthly_Avg"], 999)
     df.loc[(df["Status"] == "Healthy") & (df["Months_Cover"] > 4) & (df["Current_Stock"] > 5), "Status"] = "Overstock"
     df.loc[(df["Status"] == "Healthy") & (df["Months_Cover"] > 2.5) & (df["Current_Stock"] > 3), "Status"] = "Slow-moving"
@@ -620,8 +676,12 @@ def stock_health():
     k4.metric("Overstock", f"{(df['Status']=='Overstock').sum():,}")
     k5.metric("Slow-moving", f"{(df['Status']=='Slow-moving').sum():,}")
     
+    display_cols = [
+        "Branch", "Brand", "ItemGroup1", "Model No",
+        "Current_Stock", "Total_Sold", "Monthly_Avg", "Months_Cover", "Status"
+    ]
+    
     tab1, tab2, tab3, tab4 = st.tabs(["🔴 Stockouts", "⚫ Dead Stock", "🟠 Overstock", "🟡 Slow-moving"])
-    display_cols = ["Branch", "Brand", "ItemGroup1", "Model No", "Current_Stock", "Total_Sold", "Monthly_Avg", "Months_Cover", "Status"]
     
     with tab1:
         st.dataframe(df[df["Status"]=="Stockout"][display_cols].sort_values("Total_Sold", ascending=False), use_container_width=True, height=400)
@@ -640,9 +700,13 @@ def stock_health():
         df[df["Status"]=="Overstock"][display_cols].to_excel(writer, sheet_name="Overstock", index=False)
         df[df["Status"]=="Slow-moving"][display_cols].to_excel(writer, sheet_name="Slow_moving", index=False)
     
-    st.download_button("⬇️ Download Full Stock Health Report", data=output.getvalue(),
-                       file_name=f"Stock_Health_Report_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
-                       mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+    st.download_button(
+        "⬇️ Download Full Stock Health Report",
+        data=output.getvalue(),
+        file_name=f"Stock_Health_Report_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True
+    )
 
 # -------------------------------------------------
 # MODULE 3: Smart LPO
@@ -670,63 +734,40 @@ def smart_lpo():
         st.error(error)
         return
     
-    # Diagnostic
     st.write("### Quick Check")
-    st.write(f"Total records: **{len(df)}**")
-    st.write(f"Unique Branches: **{df['Branch'].nunique()}**")
-    st.write(f"Sample Brands: {list(df['Brand'].dropna().unique())[:12]}")
+    st.write(f"Total records: **{len(df)}** | Branches: **{df['Branch'].nunique()}**")
     
-    # Settings
     st.markdown("### Ordering Settings")
     col_a, col_b, col_c = st.columns(3)
     with col_a:
-        target_months = st.slider("Target Months of Cover (normal items)", 0.5, 2.0, 1.0, 0.1)
+        target_months = st.slider("Target Months of Cover (normal)", 0.5, 2.0, 1.0, 0.1)
     with col_b:
         min_sales_normal = st.number_input("Min Monthly Sales (normal)", 0.0, 20.0, 0.5, 0.1)
     with col_c:
         safety_days = st.number_input("Min Days of Cover (normal)", 10, 60, 30)
     
-    # Calculations
-    df["Days_of_Cover"] = np.where(
-        df["Monthly_Avg"] > 0,
-        (df["Current_Stock"] / df["Monthly_Avg"] * 30).round(1),
-        999
-    )
+    df["Days_of_Cover"] = np.where(df["Monthly_Avg"] > 0, (df["Current_Stock"] / df["Monthly_Avg"] * 30).round(1), 999)
     
     item_group = df["ItemGroup1"].astype(str).str.upper()
-    
-    # Category flags
     df["Is_MDA_SDA"] = item_group.str.contains("MDA|SDA", na=False)
+    df["Is_Space_Consuming"] = item_group.str.contains("LDA|ELECTRONICS|BUILT-IN|BUILT IN|COMMERCIAL", na=False)
     
-    df["Is_Space_Consuming"] = item_group.str.contains(
-        "LDA|ELECTRONICS|BUILT-IN|BUILT IN|COMMERCIAL", na=False
-    )
-    
-    # Brands for LPO sheet
     brand_upper = df["Brand"].astype(str).str.upper().str.strip()
     lpo_brands = ["MIKA", "SAMSUNG", "ORYX", "BOSCH"]
     df["Is_LPO_Brand"] = brand_upper.isin(lpo_brands)
     
     df["Target_Stock"] = (df["Monthly_Avg"] * target_months).round(0)
     
-    # ---------- ORDERING LOGIC ----------
     suggested = []
-    
     for idx, row in df.iterrows():
         order_qty = 0
         
-        # 1. Space-consuming categories (LDA, Electronics, Built-in, Commercial)
-        #    Only if sold at least 3 pcs in the whole period → Max order = 1
         if row["Is_Space_Consuming"]:
             if row["Total_Sold"] >= 3 and row["Current_Stock"] <= 1:
                 order_qty = 1
-        
-        # 2. MDA / SDA items
         elif row["Is_MDA_SDA"]:
             if row["Monthly_Avg"] >= 0.6 and row["Current_Stock"] <= 2:
                 order_qty = max(1, int(round(row["Monthly_Avg"] * 1.4 - row["Current_Stock"])))
-        
-        # 3. Normal items
         else:
             if (row["Monthly_Avg"] >= min_sales_normal and 
                 row["Days_of_Cover"] < safety_days and 
@@ -737,26 +778,16 @@ def smart_lpo():
     
     df["Suggested_Order"] = suggested
     
-    # Final recommendations
     lpo = df[df["Suggested_Order"] > 0].copy()
     lpo = lpo.sort_values(["Brand", "Branch", "Suggested_Order"], ascending=[True, True, False])
     
-    # Split into 3 groups
     space_consuming = lpo[lpo["Is_Space_Consuming"]].copy()
     lpo_sheet = lpo[(lpo["Is_LPO_Brand"]) & (~lpo["Is_Space_Consuming"])].copy()
     goods_issue = lpo[(~lpo["Is_LPO_Brand"]) & (~lpo["Is_Space_Consuming"])].copy()
     
-    st.success(
-        f"Total: **{len(lpo)}**  |  "
-        f"LPO: {len(lpo_sheet)}  |  "
-        f"Goods issue: {len(goods_issue)}  |  "
-        f"Space Consuming: {len(space_consuming)}"
-    )
+    st.success(f"Total: **{len(lpo)}** | LPO: {len(lpo_sheet)} | Goods issue: {len(goods_issue)} | Space Consuming: {len(space_consuming)}")
     
-    display_cols = [
-        "Branch", "Brand", "ItemGroup1", "Model No",
-        "Current_Stock", "Monthly_Avg", "Days_of_Cover", "Suggested_Order"
-    ]
+    display_cols = ["Branch", "Brand", "ItemGroup1", "Model No", "Current_Stock", "Monthly_Avg", "Days_of_Cover", "Suggested_Order"]
     
     tab1, tab2, tab3 = st.tabs([
         "LPO (MIKA / SAMSUNG / ORYX / Bosch)",
@@ -778,26 +809,22 @@ def smart_lpo():
     
     with tab3:
         if len(space_consuming) == 0:
-            st.info("No Space Consuming items currently need ordering.")
+            st.info("No Space Consuming items need ordering.")
         else:
             st.dataframe(space_consuming[display_cols], use_container_width=True, height=400)
     
-    # ---------- Download with 3 sheets ----------
     output = BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        # Sheet 1: LPO
         if len(lpo_sheet) > 0:
             lpo_sheet[display_cols].to_excel(writer, sheet_name="LPO", index=False)
         else:
             pd.DataFrame({"Message": ["No recommendations"]}).to_excel(writer, sheet_name="LPO", index=False)
         
-        # Sheet 2: Goods issue
         if len(goods_issue) > 0:
             goods_issue[display_cols].to_excel(writer, sheet_name="Goods issue", index=False)
         else:
             pd.DataFrame({"Message": ["No recommendations"]}).to_excel(writer, sheet_name="Goods issue", index=False)
         
-        # Sheet 3: Space Consuming
         if len(space_consuming) > 0:
             space_consuming[display_cols].to_excel(writer, sheet_name="Space Consuming", index=False)
         else:
@@ -810,6 +837,7 @@ def smart_lpo():
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         use_container_width=True
     )
+
 # -------------------------------------------------
 # Router
 # -------------------------------------------------
