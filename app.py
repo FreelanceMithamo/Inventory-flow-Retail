@@ -505,6 +505,8 @@ def load_and_prepare(uploaded):
     s_brand = next((stock_cols[k] for k in stock_cols if "brand" in k), None)
     s_group = next((stock_cols[k] for k in stock_cols if "group" in k), None)
     s_model = next((stock_cols[k] for k in stock_cols if "model" in k), None)
+    # "Supplier Product Status" (or similar) — e.g. Available / REG / New / Repl / Discontinued
+    s_status = next((stock_cols[k] for k in stock_cols if "status" in k), None)
 
     if not all([s_brand, s_model]):
         return None, f"Stocks sheet missing columns. Found: {list(df_stock.columns)}"
@@ -512,6 +514,7 @@ def load_and_prepare(uploaded):
     id_vars = [s_brand]
     if s_group: id_vars.append(s_group)
     if s_model: id_vars.append(s_model)
+    if s_status: id_vars.append(s_status)
 
     # CRITICAL FIX: Exclude any column that contains "total"
     branch_cols = [
@@ -537,14 +540,20 @@ def load_and_prepare(uploaded):
     rename_map = {s_brand: "Brand", s_model: "Model No"}
     if s_group:
         rename_map[s_group] = "ItemGroup1"
+    if s_status:
+        rename_map[s_status] = "Supplier_Status"
     stock_long = stock_long.rename(columns=rename_map)
 
     if "ItemGroup1" not in stock_long.columns:
         stock_long["ItemGroup1"] = ""
+    if "Supplier_Status" not in stock_long.columns:
+        stock_long["Supplier_Status"] = ""
 
     stock_long["Brand"] = stock_long["Brand"].astype(str).str.strip()
     stock_long["Model No"] = stock_long["Model No"].astype(str).str.strip()
     stock_long["ItemGroup1"] = stock_long["ItemGroup1"].astype(str).str.strip()
+    stock_long["Supplier_Status"] = stock_long["Supplier_Status"].astype(str).str.strip()
+    stock_long.loc[stock_long["Supplier_Status"].str.lower().isin(["nan", "none"]), "Supplier_Status"] = ""
 
     stock_long["Product_Key"] = (
         stock_long["Brand"] + " | " +
@@ -552,10 +561,15 @@ def load_and_prepare(uploaded):
         stock_long["Model No"]
     )
 
+    # Supplier_Status is a product-level attribute (not branch-level), so it should be
+    # constant per Product_Key — take the first non-blank value seen.
     stock_agg = stock_long.groupby(
         ["Product_Key", "Branch", "Brand", "ItemGroup1", "Model No"],
         as_index=False
-    )["Current_Stock"].sum()
+    ).agg(
+        Current_Stock=("Current_Stock", "sum"),
+        Supplier_Status=("Supplier_Status", lambda s: next((v for v in s if v), ""))
+    )
 
     # ---------- Merge ----------
     df = pd.merge(
@@ -568,6 +582,7 @@ def load_and_prepare(uploaded):
     df["Current_Stock"] = df["Current_Stock"].fillna(0)
     df["Total_Sold"] = df["Total_Sold"].fillna(0)
     df["Monthly_Avg"] = df["Monthly_Avg"].fillna(0)
+    df["Supplier_Status"] = df["Supplier_Status"].fillna("").astype(str).str.strip()
 
     # Recover product info if missing
     mask = (df["Brand"].isna()) | (df["Brand"] == "")
@@ -958,8 +973,13 @@ def data_analysis():
         unsafe_allow_html=True
     )
 
-    tab_overview, tab_bestsellers, tab_dead, tab_branch, tab_aging = st.tabs(
-        ["📦 Stock Health Overview", "⭐ Best Sellers & Stockout Risk", "⚫ Dead & Slow Stock", "🏬 Branch Performance", "⏳ Stock Aging"]
+    total_branches_all = df["Branch"].nunique()
+
+    (tab_overview, tab_bestsellers, tab_dead, tab_branch, tab_aging,
+     tab_status_gaps, tab_replenish, tab_coverage) = st.tabs(
+        ["📦 Stock Health Overview", "⭐ Best Sellers & Stockout Risk", "⚫ Dead & Slow Stock",
+         "🏬 Branch Performance", "⏳ Stock Aging", "🏷️ Availability Gaps", "🔁 Replenishment Monitor",
+         "📶 Branch Coverage"]
     )
 
     # ---- Overview ----
@@ -1100,6 +1120,187 @@ def data_analysis():
         st.plotly_chart(fig_hist, use_container_width=True)
 
         st.caption("SKU-branches sitting far to the right are aging heavily relative to their own sales — good candidates for the Aged Stock Transfer module.")
+
+    # ---- Availability Gaps (active supplier-status SKUs missing from some branches) ----
+    with tab_status_gaps:
+        st.markdown("#### Active items with registered sales that aren't stocked in every branch")
+        st.caption(
+            "Filters by the 'Supplier Product Status' column on your Stocks sheet (e.g. Available / REG / New / "
+            "Repl), then flags any of those items that have sold before but currently sit at zero stock in one "
+            "or more branches."
+        )
+
+        known_statuses = sorted([s for s in df["Supplier_Status"].unique() if s])
+
+        if not known_statuses:
+            st.info(
+                "No 'Supplier Product Status' column was detected on your Stocks sheet. Add a column with a "
+                "header containing the word 'Status' (e.g. 'Supplier Product Status') listing values like "
+                "Available, REG, New, Repl, Discontinued, etc. to unlock this report."
+            )
+        else:
+            exclude_keywords = ["DISC", "EOL", "OBSOLETE", "DELIST", "STOP", "DEAD"]
+            default_selected = [s for s in known_statuses if not any(k in s.upper() for k in exclude_keywords)]
+
+            selected_status = st.multiselect(
+                "Include supplier statuses", known_statuses,
+                default=default_selected if default_selected else known_statuses
+            )
+
+            filtered = df[df["Supplier_Status"].isin(selected_status)]
+
+            if len(filtered) == 0:
+                st.warning("No rows match the selected supplier status.")
+            else:
+                prod = filtered.groupby(
+                    ["Product_Key", "Brand", "ItemGroup1", "Model No", "Supplier_Status"], as_index=False
+                ).agg(
+                    Total_Sold=("Total_Sold", "sum"),
+                    Branches_With_Stock=("Current_Stock", lambda s: int((s > 0).sum())),
+                    Branches_Total=("Branch", "nunique")
+                )
+                prod["Branches_Without_Stock"] = prod["Branches_Total"] - prod["Branches_With_Stock"]
+
+                missing_map = (
+                    filtered[filtered["Current_Stock"] <= 0]
+                    .groupby("Product_Key")["Branch"]
+                    .apply(lambda s: ", ".join(sorted(set(s))))
+                    .rename("Branches_Missing_Stock")
+                )
+                prod = prod.merge(missing_map, on="Product_Key", how="left")
+                prod["Branches_Missing_Stock"] = prod["Branches_Missing_Stock"].fillna("")
+
+                gaps = prod[(prod["Total_Sold"] > 0) & (prod["Branches_Without_Stock"] > 0)].sort_values(
+                    ["Branches_Without_Stock", "Total_Sold"], ascending=[False, False]
+                )
+
+                m1, m2, m3 = st.columns(3)
+                m1.metric("Active SKUs Selected", f"{prod['Product_Key'].nunique():,}")
+                m2.metric("SKUs With Coverage Gaps", f"{gaps['Product_Key'].nunique():,}")
+                m3.metric("Branch-Slots Missing Stock", f"{int(gaps['Branches_Without_Stock'].sum()):,}")
+
+                if len(gaps) == 0:
+                    st.success("All selected active SKUs with sales history are stocked in every branch. 🎉")
+                else:
+                    fig_gap = px.bar(
+                        gaps.head(20).sort_values("Branches_Without_Stock"),
+                        x="Branches_Without_Stock", y="Model No", orientation="h",
+                        color="Supplier_Status",
+                        title="Top 20 Active SKUs Missing From The Most Branches",
+                        hover_data=["Brand", "ItemGroup1", "Total_Sold"]
+                    )
+                    fig_gap.update_layout(margin=dict(t=60, b=10, l=10, r=10))
+                    st.plotly_chart(fig_gap, use_container_width=True)
+
+                    st.dataframe(
+                        gaps[["Brand", "ItemGroup1", "Model No", "Supplier_Status", "Total_Sold",
+                              "Branches_With_Stock", "Branches_Without_Stock", "Branches_Total",
+                              "Branches_Missing_Stock"]],
+                        use_container_width=True, height=400
+                    )
+                    st.download_button(
+                        "⬇️ Download Availability Gaps Report",
+                        data=to_excel_bytes({"Availability_Gaps": gaps}),
+                        file_name=f"Availability_Gaps_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    )
+
+    # ---- Replenishment Monitor ----
+    with tab_replenish:
+        st.markdown("#### Branches that sold out and haven't been replenished")
+        st.caption(
+            "Flags branch-SKUs that are currently at zero stock but have registered sales (meaning they did "
+            "sell through), while the same item is still available with stock in at least one other branch — "
+            "a sign that branch isn't being replenished."
+        )
+
+        stock_by_product = df[df["Current_Stock"] > 0].groupby("Product_Key")["Branch"].nunique()
+
+        candidates = df[(df["Current_Stock"] <= 0) & (df["Total_Sold"] > 0)].copy()
+        candidates = candidates[candidates["Product_Key"].isin(stock_by_product.index)]
+        candidates = candidates.merge(
+            stock_by_product.rename("Branches_With_Stock_Elsewhere"), on="Product_Key", how="left"
+        )
+
+        if len(candidates) == 0:
+            st.success("No un-replenished, sold-out branch-SKUs detected. 🎉")
+        else:
+            candidates = candidates.sort_values(
+                ["Total_Sold", "Branches_With_Stock_Elsewhere"], ascending=[False, False]
+            )
+
+            m1, m2 = st.columns(2)
+            m1.metric("Sold-Out & Un-replenished Rows", f"{len(candidates):,}")
+            m2.metric("Distinct SKUs Affected", f"{candidates['Product_Key'].nunique():,}")
+
+            fig_replenish = px.bar(
+                candidates.head(20).sort_values("Total_Sold"),
+                x="Total_Sold", y="Model No", orientation="h", color="Branch",
+                title="Top 20 Sold-Out, Un-replenished Branch-SKUs (by units sold)",
+                hover_data=["Brand", "ItemGroup1", "Branches_With_Stock_Elsewhere"]
+            )
+            fig_replenish.update_layout(margin=dict(t=60, b=10, l=10, r=10))
+            st.plotly_chart(fig_replenish, use_container_width=True)
+
+            display_cols = ["Branch", "Brand", "ItemGroup1", "Model No", "Supplier_Status",
+                             "Total_Sold", "Branches_With_Stock_Elsewhere"]
+            st.dataframe(candidates[display_cols], use_container_width=True, height=400)
+            st.download_button(
+                "⬇️ Download Replenishment Monitor Report",
+                data=to_excel_bytes({"Replenishment_Monitor": candidates[display_cols]}),
+                file_name=f"Replenishment_Monitor_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+
+    # ---- Branch Coverage ----
+    with tab_coverage:
+        st.markdown("#### SKUs stocked in only a handful of branches")
+        default_threshold = min(24, max(1, total_branches_all - 1))
+        threshold = st.slider(
+            f"Flag items stocked in fewer than N of your {total_branches_all} branches",
+            1, total_branches_all, default_threshold
+        )
+
+        coverage = df.groupby(
+            ["Product_Key", "Brand", "ItemGroup1", "Model No", "Supplier_Status"], as_index=False
+        ).agg(
+            Branches_With_Stock=("Current_Stock", lambda s: int((s > 0).sum())),
+            Total_Sold=("Total_Sold", "sum")
+        )
+        coverage["Total_Branches"] = total_branches_all
+
+        low_coverage = coverage[coverage["Branches_With_Stock"] < threshold].sort_values(
+            "Branches_With_Stock", ascending=True
+        )
+
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Total SKUs", f"{coverage['Product_Key'].nunique():,}")
+        m2.metric(f"SKUs Stocked in < {threshold} Branches", f"{len(low_coverage):,}")
+        m3.metric("Total Branches in File", f"{total_branches_all}")
+
+        if len(low_coverage) == 0:
+            st.success(f"Every SKU is stocked in at least {threshold} branches. 🎉")
+        else:
+            fig_cov = px.histogram(
+                coverage, x="Branches_With_Stock", nbins=total_branches_all,
+                title="How Many Branches Each SKU Is Stocked In (all products)",
+                color_discrete_sequence=["#0d9488"]
+            )
+            fig_cov.add_vline(x=threshold, line_dash="dash", line_color="#dc2626")
+            fig_cov.update_layout(margin=dict(t=60, b=10, l=10, r=10))
+            st.plotly_chart(fig_cov, use_container_width=True)
+
+            st.dataframe(
+                low_coverage[["Brand", "ItemGroup1", "Model No", "Supplier_Status",
+                               "Branches_With_Stock", "Total_Branches", "Total_Sold"]],
+                use_container_width=True, height=400
+            )
+            st.download_button(
+                "⬇️ Download Low Branch-Coverage Report",
+                data=to_excel_bytes({"Low_Branch_Coverage": low_coverage}),
+                file_name=f"Low_Branch_Coverage_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
 
 # -------------------------------------------------
 # MODULE 5: Aged Stock Transfer
