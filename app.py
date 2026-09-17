@@ -474,11 +474,21 @@ def load_and_prepare(uploaded):
     # ---------- SALES (Long format) ----------
     sales_cols = {str(c).lower().strip(): c for c in df_sales.columns}
 
-    branch_col = next((sales_cols[k] for k in sales_cols if "branch" in k), None)
+    # Tolerate common typos/variants for the branch column (e.g. "Banch" missing the "r").
+    branch_aliases = ["branch", "banch", "brnach", "brnch", "showroom", "outlet", "store"]
     brand_col  = next((sales_cols[k] for k in sales_cols if "brand" in k), None)
     group_col  = next((sales_cols[k] for k in sales_cols if "group" in k), None)
     model_col  = next((sales_cols[k] for k in sales_cols if "model" in k), None)
     sales_col  = next((sales_cols[k] for k in sales_cols if "sale" in k or "total" in k), None)
+    branch_col = next((sales_cols[k] for k in sales_cols if any(a in k for a in branch_aliases)), None)
+
+    # Fallback: if no alias matched, use the one column that isn't Brand/Group/Model/Sales —
+    # this handles unexpected spellings without giving up entirely.
+    if not branch_col:
+        used = {brand_col, group_col, model_col, sales_col}
+        leftover = [sales_cols[k] for k in sales_cols if sales_cols[k] not in used]
+        if len(leftover) == 1:
+            branch_col = leftover[0]
 
     if not all([branch_col, brand_col, model_col, sales_col]):
         return None, f"Sales sheet missing columns. Found: {list(df_sales.columns)}"
@@ -507,6 +517,9 @@ def load_and_prepare(uploaded):
     s_model = next((stock_cols[k] for k in stock_cols if "model" in k), None)
     # "Supplier Product Status" (or similar) — e.g. Available / REG / New / Repl / Discontinued
     s_status = next((stock_cols[k] for k in stock_cols if "status" in k), None)
+    # "WarehouseType" (or similar) — e.g. Sellable Display / Non-Sellable Display. This is a
+    # product/row attribute, NOT a branch, so it must be excluded from the branch columns below.
+    s_wtype = next((stock_cols[k] for k in stock_cols if "warehouse" in k or "display" in k), None)
 
     if not all([s_brand, s_model]):
         return None, f"Stocks sheet missing columns. Found: {list(df_stock.columns)}"
@@ -515,6 +528,7 @@ def load_and_prepare(uploaded):
     if s_group: id_vars.append(s_group)
     if s_model: id_vars.append(s_model)
     if s_status: id_vars.append(s_status)
+    if s_wtype: id_vars.append(s_wtype)
 
     # CRITICAL FIX: Exclude any column that contains "total"
     branch_cols = [
