@@ -1338,18 +1338,14 @@ def aged_stock_transfer():
         "Redeploys aged stock from slow branches to branches with strong, consistent sell-out — regardless of item group",
         "aged_back"
     )
-
     uploaded = st.file_uploader("Upload Excel file (Sales + Stocks sheets)", type=["xlsx", "xls"], key="aged_upload")
-
     if uploaded is None:
         st.info("Upload your Sales + Stocks Excel file.")
         return
-
     df, error = load_and_prepare(uploaded)
     if error:
         st.error(error)
         return
-
     df = compute_status(df)
 
     st.markdown("### Aging & Priority Settings")
@@ -1367,7 +1363,7 @@ def aged_stock_transfer():
     st.caption(
         "Receivers are ranked purely by their own average monthly sell-out — a branch with strong sales but "
         "**zero current stock** is prioritized as a receiver ahead of everyone else, no matter whether the "
-        "item is LDA, SDA or MDA."
+        "item is LDA, SDA or MDA. Multiple zero-stock receivers for the same model are filled in rank order."
     )
 
     # ---- Identify aged stock (potential donors) ----
@@ -1379,33 +1375,40 @@ def aged_stock_transfer():
     transfers = []
 
     for product, group in df.groupby("Product_Key"):
-        # Receivers: branches with zero (or near-zero) stock but real sales history for this product,
-        # ranked highest-sales-first — irrespective of ItemGroup1.
-        receivers = group[
-            (group["Current_Stock"] <= 0) &
-            (group["Monthly_Avg"] > 0)
-        ].sort_values("Monthly_Avg", ascending=False)
-
-        if len(receivers) == 0:
+        # All genuine zero-stock receivers for this product, ranked by sales strength
+        receivers = (
+            group[
+                (group["Current_Stock"] <= 0) &
+                (group["Monthly_Avg"] > 0)
+            ]
+            .sort_values("Monthly_Avg", ascending=False)
+            .copy()
+        )
+        if receivers.empty:
             continue
 
         receiver_branches = set(receivers["Branch"])
 
-        donors = group[
-            (group["Is_Aged"]) &
-            (~group["Branch"].isin(receiver_branches))
-        ].sort_values("Monthly_Avg", ascending=True).copy()  # weakest-performing branches donate first
-
-        if len(donors) == 0:
+        # Donors = aged stock, not already in the receiver list, weakest sales first
+        donors = (
+            group[
+                (group["Is_Aged"]) &
+                (~group["Branch"].isin(receiver_branches))
+            ]
+            .sort_values("Monthly_Avg", ascending=True)
+            .copy()
+        )
+        if donors.empty:
             continue
 
         donors["Available"] = (donors["Current_Stock"] - min_keep).clip(lower=0)
 
+        # Walk receivers in priority order; each can pull from any remaining donor stock
         for _, rec in receivers.iterrows():
             needed = max(2, int(math.ceil(rec["Monthly_Avg"] * 2)))
             remaining = needed
 
-            for idx, don in donors.iterrows():
+            for idx in donors.index:
                 if remaining <= 0:
                     break
                 can_give = donors.at[idx, "Available"]
@@ -1421,24 +1424,31 @@ def aged_stock_transfer():
                         "Model No": rec.get("Model No", ""),
                         "Receiver Monthly Avg Sales": round(float(rec["Monthly_Avg"]), 2),
                         "Receiver Current Stock": int(rec["Current_Stock"]),
-                        "Donor Branch": don["Branch"],
-                        "Donor Months Cover (aged)": round(float(don["Months_Cover"]), 1) if don["Months_Cover"] != 999 else "Never sold",
-                        "Suggested Transfer Qty": int(give)
+                        "Donor Branch": donors.at[idx, "Branch"],
+                        "Donor Months Cover (aged)": (
+                            round(float(donors.at[idx, "Months_Cover"]), 1)
+                            if donors.at[idx, "Months_Cover"] != 999
+                            else "Never sold"
+                        ),
+                        "Suggested Transfer Qty": int(give),
                     })
                     donors.at[idx, "Available"] -= give
                     remaining -= give
 
     report = pd.DataFrame(transfers)
-
-    if len(report) == 0:
+    if report.empty:
         st.warning("No aged-stock transfers available with current settings. Try lowering the Months of Cover threshold.")
         return
 
-    # Global priority: receivers with the strongest sales get ranked first, regardless of item group.
-    report = report.sort_values(
-        by=["Receiver Monthly Avg Sales", "Suggested Transfer Qty"],
-        ascending=[False, False]
-    ).reset_index(drop=True)
+    # Global ranking still prioritises strongest receivers first
+    report = (
+        report
+        .sort_values(
+            by=["Receiver Monthly Avg Sales", "Suggested Transfer Qty"],
+            ascending=[False, False]
+        )
+        .reset_index(drop=True)
+    )
     report.insert(0, "Priority Rank", report.index + 1)
 
     st.success(
@@ -1446,13 +1456,18 @@ def aged_stock_transfer():
         f"Total units to move: **{report['Suggested Transfer Qty'].sum()}**"
     )
 
-    top_receivers = report.groupby("Receiver Branch", as_index=False)["Suggested Transfer Qty"].sum().sort_values(
-        "Suggested Transfer Qty", ascending=False
+    top_receivers = (
+        report
+        .groupby("Receiver Branch", as_index=False)["Suggested Transfer Qty"]
+        .sum()
+        .sort_values("Suggested Transfer Qty", ascending=False)
     )
     fig = px.bar(
-        top_receivers, x="Receiver Branch", y="Suggested Transfer Qty",
+        top_receivers,
+        x="Receiver Branch",
+        y="Suggested Transfer Qty",
         title="Aged Stock Units Recommended to Receive, by Branch",
-        color_discrete_sequence=["#d97706"]
+        color_discrete_sequence=["#d97706"],
     )
     fig.update_layout(margin=dict(t=60, b=10, l=10, r=10), xaxis_tickangle=-35)
     st.plotly_chart(fig, use_container_width=True)
@@ -1464,9 +1479,8 @@ def aged_stock_transfer():
         data=to_excel_bytes({"Aged_Stock_Transfers": report}),
         file_name=f"Aged_Stock_Transfers_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        use_container_width=True
+        use_container_width=True,
     )
-
 
 
 # -------------------------------------------------
