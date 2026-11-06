@@ -1333,7 +1333,7 @@ def data_analysis():
 # MODULE 5: Aged Stock Transfer
 # -------------------------------------------------
 def aged_stock_transfer():
-    module_header(
+        module_header(
         "🕰️📦 Aged Stock Transfer",
         "Redeploys aged stock from slow branches to branches with strong, consistent sell-out — regardless of item group",
         "aged_back"
