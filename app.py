@@ -963,35 +963,424 @@ def smart_lpo():
 # -------------------------------------------------
 # MODULE 4: Data Analysis & Insights
 # -------------------------------------------------
+# ==========================================================================
+#  DATA ANALYSIS & INSIGHTS - single-section replacement
+#  Paste this whole block over your old data_analysis() function.
+#  Keep your existing: st, px, datetime, module_header, to_excel_bytes.
+#  Everything new is prefixed de_ / DE_ so it cannot clash with your other modules.
+#  Your old load_and_prepare / compute_status stay untouched (other modules use them).
+# ==========================================================================
+import re
+from io import BytesIO
+import numpy as np
+import pandas as pd
+
+# ------------------------------ SETTINGS ----------------------------------
+DE_ALIVE_RATIO = 0.5          # other branches must sell >= 50% of their normal for a quiet month to count as a stockout
+DE_LOW_FRACTION = 0.25        # a branch month below 25% of its own normal (while others are healthy) = partial stockout
+DE_PROMO_RATIO = 1.5          # a network-wide month >= 1.5x normal AND statistically unusual = promo / event month
+DE_BULK_SIGMA = 3.0           # one-off branch month above median + 3 robust sigmas = bulk / project sale (capped)
+DE_MIN_BRANCHES_FOR_PROMO = 3 # need at least 3 branches selling the item to call a promo month
+DE_MIN_MONTHS_FOR_SPIKES = 4  # need at least 4 months of history before promo / bulk detection switches on
+DE_OVERSTOCK_MONTHS = 6       # stock cover above this = Overstock
+DE_SLOW_UNITS_PER_MONTH = 0.5 # clean average below this = Slow-moving
+DE_EOL_WORDS = ["EOL", "DISC", "OBSOLETE", "DELIST", "STOP", "DEAD", "PHASE", "NLA", "RUN DOWN", "RUN-DOWN",
+             "END OF LIFE", "NO LONGER"]
+
+DE_STATUS_COLORS = {
+    "Healthy": "#16a34a", "Stockout": "#dc2626", "Dead Stock": "#374151", "Overstock": "#ea580c",
+    "Slow-moving": "#f59e0b", "EOL / Run-down": "#6b7280", "No Stock / No Demand": "#cbd5e1",
+}
+
+# ------------------------------ COLUMN FINDING ----------------------------
+DE_KEY_BRANCH = ["branch", "store", "outlet", "shop", "location", "site"]
+DE_KEY_MODEL = ["model no", "modelno", "model number", "model", "item code", "sku", "product code", "material", "code"]
+DE_KEY_BRAND = ["brand", "make", "manufacturer"]
+DE_KEY_GROUP = ["itemgroup1", "item group 1", "item group", "itemgroup", "product group", "category", "group"]
+DE_KEY_STATUS = ["supplier product status", "product status", "item status", "status"]
+DE_KEY_QTY = ["current stock", "stock on hand", "on hand", "soh", "quantity", "qty", "balance", "units", "stock"]
+DE_AVG_WORDS = ["avg", "average", "mean", "total", "sum", "monthly", "per month", "grand"]
+DE_HEADER_WORDS = ["branch", "store", "model", "brand", "group", "stock", "status", "qty", "quantity", "item", "code", "sku"]
+
+
+def de_clean(c):
+    return re.sub(r"[^a-z0-9 ]", " ", str(c).lower()).strip()
+
+
+def de_pick(cols, options, used=()):
+    low = {c: de_clean(c) for c in cols if c not in used}
+    for o in options:
+        for c, l in low.items():
+            if l == o:
+                return c
+    for o in options:
+        for c, l in low.items():
+            if o in l:
+                return c
+    return None
+
+
+def de_label(c):
+    if isinstance(c, (pd.Timestamp,)) or hasattr(c, "strftime"):
+        return c.strftime("%b-%y")
+    return str(c).strip()
+
+
+def de_read(xl, sheet):
+    raw = xl.parse(sheet, header=None, dtype=object)
+    best, score = 0, -1
+    for i in range(min(15, len(raw))):
+        s = sum(isinstance(c, str) and any(w in c.lower() for w in DE_HEADER_WORDS) for c in raw.iloc[i])
+        if s > score:
+            best, score = i, s
+    df = raw.iloc[best + 1:].copy()
+    labels, seen = [], {}
+    for c in raw.iloc[best]:
+        l = de_label(c)
+        seen[l] = seen.get(l, 0) + 1
+        labels.append(l if seen[l] == 1 else f"{l}_{seen[l]}")
+    df.columns = labels
+    df = df.loc[:, [c for c in df.columns if c and c.lower() != "nan"]]
+    return df.dropna(how="all")
+
+
+def de_find_sheets(xl):
+    names = xl.sheet_names
+    sales = [n for n in names if "sale" in n.lower()]
+    stock = [n for n in names if ("stock" in n.lower() or "inventory" in n.lower()) and "supplier" not in n.lower()]
+    if sales and stock:
+        return sales[0], stock[0]
+    if len(names) >= 2:
+        return names[0], names[1]
+    raise ValueError("The workbook needs a Sales sheet and a Stocks sheet.")
+
+
+def de_month_cols(df, id_cols):
+    cands = []
+    for c in df.columns:
+        if c in id_cols or any(w in de_clean(c) for w in DE_AVG_WORDS):
+            continue
+        if pd.to_numeric(df[c], errors="coerce").notna().mean() >= 0.6:
+            cands.append(c)
+    # drop a trailing column that is just the old "monthly average" (row-mean of the others, mostly decimals)
+    if len(cands) >= 3:
+        M = df[cands[:-1]].apply(pd.to_numeric, errors="coerce").fillna(0)
+        last = pd.to_numeric(df[cands[-1]], errors="coerce").fillna(0)
+        active = (M.sum(axis=1) > 0) | (last > 0)
+        if active.sum() >= 20:
+            close = (np.abs(M.mean(axis=1) - last) <= 0.51)[active].mean()
+            decimals = ((last % 1) != 0)[active].mean()
+            if close >= 0.9 and decimals >= 0.2:
+                cands = cands[:-1]
+    return cands
+
+
+def de_first(s):
+    s = [x for x in s if isinstance(x, str) and x.strip() and x.strip().lower() != "nan"]
+    return s[0] if s else ""
+
+
+def de_is_eol_text(t):
+    t = str(t).upper()
+    return any(w in t for w in DE_EOL_WORDS)
+
+
+# ------------------------------ CORE ANALYSIS -----------------------------
+def de_analyse_product(S, stock, eol):
+    """S: branches x months (units sold). Returns dict of arrays. Flags: SO stockout, NL not listed yet,
+    PR promo month normalised, BK bulk/one-off capped, EN end of supply (EOL)."""
+    B, T = S.shape
+    net = S.sum(axis=0)
+    nz = S > 0
+    n_nz = nz.sum(axis=1)
+    base = np.array([np.median(S[r][nz[r]]) if n_nz[r] else 0.0 for r in range(B)])
+    min_nz = min(2 if T <= 4 else 3, T)
+    flags = np.full((B, T), "", dtype=object)
+    cens = np.zeros((B, T), dtype=bool)
+
+    # 1) stockout / not-listed / end-of-supply months  (excluded from the average)
+    for r in range(B):
+        if n_nz[r] == 0:
+            continue
+        first_nz, last_nz = np.where(nz[r])[0].min(), np.where(nz[r])[0].max()
+        trailing = np.zeros(T, bool); trailing[last_nz + 1:] = True
+        if eol[r]:                                   # supply ended: trailing zeros are not lost demand
+            m = trailing & (S[r] == 0)
+            cens[r] |= m; flags[r, m] = "EN"
+            continue
+        if n_nz[r] < min_nz:
+            continue
+        other = net - S[r]
+        pos = other[other > 0]
+        alive = (other >= DE_ALIVE_RATIO * np.median(pos)) if len(pos) else np.zeros(T, bool)
+        weak = (S[r] == 0) | (S[r] < DE_LOW_FRACTION * base[r])
+        m = weak & alive
+        if stock[r] <= 0:                            # still out of stock today: trailing zeros are lost sales
+            m |= trailing & (S[r] == 0)
+        lead = np.arange(T) < first_nz
+        cens[r] |= m
+        flags[r, m & lead] = "NL"
+        flags[r, m & ~lead] = "SO"
+
+    valid = ~cens
+    adj = S.astype(float).copy()
+
+    # 2) promo / event months: most branches lift together vs their own normal
+    elig = (base > 0) & (n_nz >= 2)
+    if T >= DE_MIN_MONTHS_FOR_SPIKES and elig.sum() >= DE_MIN_BRANCHES_FOR_PROMO:
+        u = np.full(T, np.nan)
+        for m in range(T):
+            rows = elig & valid[:, m]
+            if rows.sum() >= DE_MIN_BRANCHES_FOR_PROMO:
+                u[m] = np.median(S[rows, m] / base[rows])
+        ok = ~np.isnan(u)
+        if ok.sum() >= DE_MIN_MONTHS_FOR_SPIKES:
+            med = np.median(u[ok]); mad = np.median(np.abs(u[ok] - med))
+            thr = max(DE_PROMO_RATIO * med, med + DE_BULK_SIGMA * 1.4826 * mad)
+            for m in (np.where(ok & (u > thr))[0] if med > 0 else []):   # intermittent items: no promo logic
+                hit = valid[:, m] & (S[:, m] > 0)
+                adj[hit, m] = S[hit, m] * (med / u[m])
+                flags[hit, m] = "PR"
+
+    # 3) bulk / project / one-off months in a single branch (capped)
+    for r in range(B):
+        idx = np.where(valid[r] & (adj[r] > 0))[0]
+        if len(idx) >= DE_MIN_MONTHS_FOR_SPIKES:
+            vals = adj[r, idx]
+            med = np.median(vals); mad = np.median(np.abs(vals - med))
+            bound = max(med + DE_BULK_SIGMA * 1.4826 * mad, 2 * med, med + 2)
+            over = vals > bound
+            if over.any():
+                adj[r, idx[over]] = bound
+                for j in idx[over]:
+                    if flags[r, j] == "":
+                        flags[r, j] = "BK"
+
+    avg = np.array([adj[r, valid[r]].mean() if valid[r].any() else 0.0 for r in range(B)])
+    return {
+        "avg": avg, "raw": S.mean(axis=1), "used": valid.sum(axis=1), "flags": flags,
+    }
+
+
+def de_load_and_prepare(uploaded, exclude_cols=()):
+    """Returns (df, error). df is one row per Branch x Product with clean demand. Extra tables are in df.attrs."""
+    try:
+        xl = pd.ExcelFile(uploaded)
+        sname, tname = de_find_sheets(xl)
+        sales_raw, stock_raw = de_read(xl, sname), de_read(xl, tname)
+    except Exception as e:
+        return None, f"Could not read the workbook: {e}"
+
+    sb, sm = de_pick(sales_raw.columns, DE_KEY_BRANCH), de_pick(sales_raw.columns, DE_KEY_MODEL)
+    tb, tm = de_pick(stock_raw.columns, DE_KEY_BRANCH), de_pick(stock_raw.columns, DE_KEY_MODEL)
+    if not (sb and sm):
+        return None, f"Sales sheet '{sname}': could not find Branch / Model columns. Found: {list(sales_raw.columns)}"
+    if not (tb and tm):
+        return None, f"Stocks sheet '{tname}': could not find Branch / Model columns. Found: {list(stock_raw.columns)}"
+
+    s_brand = de_pick(sales_raw.columns, DE_KEY_BRAND, [sb, sm])
+    s_group = de_pick(sales_raw.columns, DE_KEY_GROUP, [sb, sm, s_brand])
+    idc = {c for c in (sb, sm, s_brand, s_group) if c}
+    months = de_month_cols(sales_raw, idc | set(exclude_cols))
+    if not months:
+        return None, f"No month columns found on '{sname}'. Columns seen: {list(sales_raw.columns)}"
+
+    # ---- sales (any number of months) ----
+    M = sales_raw[months].apply(pd.to_numeric, errors="coerce").fillna(0)
+    sales = pd.DataFrame({
+        "Branch": sales_raw[sb].astype(str).str.strip().str.upper(),
+        "Product_Key": sales_raw[sm].astype(str).str.strip().str.upper(),
+        "Model No": sales_raw[sm].astype(str).str.strip(),
+        "Brand": sales_raw[s_brand].astype(str).str.strip() if s_brand else "",
+        "ItemGroup1": sales_raw[s_group].astype(str).str.strip() if s_group else "",
+    })
+    sales = pd.concat([sales, M], axis=1)
+    sales = sales[~sales["Branch"].isin(["", "NAN"]) & ~sales["Product_Key"].isin(["", "NAN"])]
+    agg = {"Model No": "first", "Brand": de_first, "ItemGroup1": de_first, **{m: "sum" for m in months}}
+    sales = sales.groupby(["Branch", "Product_Key"], as_index=False).agg(agg)
+
+    # ---- stock ----
+    t_brand = de_pick(stock_raw.columns, DE_KEY_BRAND, [tb, tm])
+    t_group = de_pick(stock_raw.columns, DE_KEY_GROUP, [tb, tm, t_brand])
+    t_status = de_pick(stock_raw.columns, DE_KEY_STATUS, [tb, tm])
+    sup_cols = [c for c in stock_raw.columns if "supplier" in de_clean(c)]
+    t_qty = de_pick(stock_raw.columns, DE_KEY_QTY, [tb, tm, t_status, *sup_cols])
+    stock = pd.DataFrame({
+        "Branch": stock_raw[tb].astype(str).str.strip().str.upper(),
+        "Product_Key": stock_raw[tm].astype(str).str.strip().str.upper(),
+        "Model No_s": stock_raw[tm].astype(str).str.strip(),
+        "Brand_s": stock_raw[t_brand].astype(str).str.strip() if t_brand else "",
+        "ItemGroup1_s": stock_raw[t_group].astype(str).str.strip() if t_group else "",
+        "Supplier_Status": stock_raw[t_status].astype(str).str.strip() if t_status else "",
+        "Current_Stock": pd.to_numeric(stock_raw[t_qty], errors="coerce").fillna(0) if t_qty else 1,
+    })
+    stock = stock[~stock["Branch"].isin(["", "NAN"]) & ~stock["Product_Key"].isin(["", "NAN"])]
+    stock = stock.groupby(["Branch", "Product_Key"], as_index=False).agg(
+        {"Model No_s": "first", "Brand_s": de_first, "ItemGroup1_s": de_first, "Supplier_Status": de_first, "Current_Stock": "sum"})
+
+    full = sales.merge(stock, on=["Branch", "Product_Key"], how="outer")
+    full[months] = full[months].fillna(0)
+    full["Current_Stock"] = full["Current_Stock"].fillna(0)
+    for a, b in (("Model No", "Model No_s"), ("Brand", "Brand_s"), ("ItemGroup1", "ItemGroup1_s")):
+        full[a] = full[a].where(full[a].fillna("").astype(str).str.strip() != "", full[b]).fillna("")
+    full = full.drop(columns=["Model No_s", "Brand_s", "ItemGroup1_s"])
+    full["Supplier_Status"] = full["Supplier_Status"].fillna("")
+    pmap = full[full["Supplier_Status"] != ""].groupby("Product_Key")["Supplier_Status"].first()
+    blank = full["Supplier_Status"] == ""
+    full.loc[blank, "Supplier_Status"] = full.loc[blank, "Product_Key"].map(pmap).fillna("")
+    full["Is_EOL"] = full["Supplier_Status"].map(de_is_eol_text)
+    full = full.reset_index(drop=True)
+
+    # ---- clean demand, product by product ----
+    Sall = full[months].to_numpy(float).clip(min=0)
+    stk, eol = full["Current_Stock"].to_numpy(float), full["Is_EOL"].to_numpy(bool)
+    n, T = len(full), len(months)
+    avg, raw, used = np.zeros(n), np.zeros(n), np.zeros(n, int)
+    flg = np.full((n, T), "", dtype=object)
+    for _, pos in full.groupby("Product_Key").indices.items():
+        res = de_analyse_product(Sall[pos], stk[pos], eol[pos])
+        avg[pos], raw[pos], used[pos], flg[pos] = res["avg"], res["raw"], res["used"], res["flags"]
+
+    cnt = lambda code: (flg == code).sum(axis=1)
+    full["Total_Sold"] = Sall.sum(axis=1)
+    full["Months_Uploaded"] = T
+    full["Months_Used"] = used
+    full["Stockout_Months_Excluded"] = cnt("SO")
+    full["Not_Listed_Months_Excluded"] = cnt("NL")
+    full["EOL_Months_Excluded"] = cnt("EN")
+    full["Promo_Months_Normalised"] = cnt("PR")
+    full["Bulk_Months_Capped"] = cnt("BK")
+    full["Raw_Monthly_Avg"] = raw
+    full["Monthly_Avg"] = avg                      # <- the clean, availability-adjusted monthly average
+    full["Confidence"] = np.where(used >= 6, "High", np.where(used >= 3, "Medium", "Low"))
+    notes = []
+    for i in range(n):
+        p = []
+        if full.at[i, "Stockout_Months_Excluded"]: p.append(f"{full.at[i, 'Stockout_Months_Excluded']} stockout mth(s) excluded")
+        if full.at[i, "Not_Listed_Months_Excluded"]: p.append(f"{full.at[i, 'Not_Listed_Months_Excluded']} not-yet-listed mth(s) excluded")
+        if full.at[i, "EOL_Months_Excluded"]: p.append(f"{full.at[i, 'EOL_Months_Excluded']} end-of-supply mth(s) excluded")
+        if full.at[i, "Promo_Months_Normalised"]: p.append(f"{full.at[i, 'Promo_Months_Normalised']} promo mth(s) normalised")
+        if full.at[i, "Bulk_Months_Capped"]: p.append(f"{full.at[i, 'Bulk_Months_Capped']} bulk mth(s) capped")
+        notes.append("; ".join(p))
+    full["Adjustment_Note"] = notes
+
+    # ---- tables for download / audit ----
+    ids = ["Branch", "Brand", "ItemGroup1", "Model No"]
+    enriched = pd.concat([
+        full[ids], full[months],
+        full[["Months_Uploaded", "Stockout_Months_Excluded", "Not_Listed_Months_Excluded", "Promo_Months_Normalised",
+              "Bulk_Months_Capped", "Raw_Monthly_Avg", "Monthly_Avg"]].rename(columns={"Monthly_Avg": "Clean_Monthly_Avg"}),
+    ], axis=1)
+    enriched["Raw_Monthly_Avg"] = enriched["Raw_Monthly_Avg"].round(2)
+    enriched["Clean_Monthly_Avg"] = enriched["Clean_Monthly_Avg"].round(2)
+    flags_df = pd.concat([full[ids].reset_index(drop=True), pd.DataFrame(flg, columns=months)], axis=1)
+
+    full.attrs.update({"months": months, "sales_sheet": sname, "stock_sheet": tname,
+                       "enriched": enriched, "flags": flags_df})
+    return full, None
+
+
+def de_compute_status(df):
+    d = df.copy()
+    cover = np.where(d["Monthly_Avg"] > 0, d["Current_Stock"] / d["Monthly_Avg"].where(d["Monthly_Avg"] > 0, 1), np.nan)
+    d["Months_Cover"] = cover
+    status = np.select(
+        [d["Is_EOL"],
+         (d["Current_Stock"] <= 0) & (d["Monthly_Avg"] > 0),
+         (d["Current_Stock"] <= 0),
+         d["Total_Sold"] <= 0,
+         d["Monthly_Avg"] < DE_SLOW_UNITS_PER_MONTH,
+         d["Months_Cover"] > DE_OVERSTOCK_MONTHS],
+        ["EOL / Run-down", "Stockout", "No Stock / No Demand", "Dead Stock", "Slow-moving", "Overstock"],
+        default="Healthy")
+    d["Status"] = status
+    d.attrs = dict(df.attrs)
+    return d
+
+
+def de_month_flag_summary(flags_df, months):
+    rows = []
+    for m in months:
+        col = flags_df[m]
+        rows.append({"Month": m, "Stockout (excluded)": int((col == "SO").sum()),
+                     "Not yet listed (excluded)": int((col == "NL").sum()),
+                     "Promo (normalised)": int((col == "PR").sum()),
+                     "Bulk (capped)": int((col == "BK").sum())})
+    return pd.DataFrame(rows)
+
+
+def de_build_enriched_sales_excel(meta):
+    """Sales sheet as uploaded + diagnostics + Clean_Monthly_Avg at the far end, and a Flags audit sheet.
+    meta = the dict saved from df.attrs right after de_load_and_prepare()."""
+    enriched, flags_df = meta["enriched"], meta["flags"]
+    from openpyxl.styles import Font
+    bio = BytesIO()
+    with pd.ExcelWriter(bio, engine="openpyxl") as w:
+        enriched.to_excel(w, sheet_name="Sales_With_Clean_Avg", index=False)
+        flags_df.to_excel(w, sheet_name="Month_Flags", index=False)
+        legend = pd.DataFrame({"Code": ["SO", "NL", "EN", "PR", "BK", "(blank)"],
+                               "Meaning": ["Stockout month - excluded from the average (others were selling normally)",
+                                           "Not listed yet - zero before the branch first sold; excluded",
+                                           "End of supply (EOL/discontinued) - trailing zeros excluded",
+                                           "Promo / event month - network-wide spike normalised to normal level",
+                                           "Bulk / one-off sale in this branch - capped at the normal upper bound",
+                                           "Normal month - used as is"]})
+        legend.to_excel(w, sheet_name="Legend", index=False)
+        for ws in w.book.worksheets:
+            ws.freeze_panes = "E2" if ws.title != "Legend" else "A2"
+            for c in ws[1]:
+                c.font = Font(bold=True)
+            for col in ws.columns:
+                ws.column_dimensions[col[0].column_letter].width = 14 if ws.title != "Legend" else 70
+    return bio.getvalue()
+
+
+
 def data_analysis():
     module_header("📊🔍 Data Analysis & Insights", "Visual inventory intelligence across all branches", "analysis_back")
 
-    uploaded = st.file_uploader("Upload Excel file (Sales + Stocks sheets)", type=["xlsx", "xls"], key="analysis_upload")
-
+    uploaded = st.file_uploader("Upload Excel file (Sales + Stocks sheets) - any number of months of sales",
+                                type=["xlsx", "xls"], key="analysis_upload")
     if uploaded is None:
-        st.info("Upload your Sales + Stocks Excel file.")
+        st.info("Upload your Sales + Stocks Excel file. Sales can cover any number of months (3, 6, 12...): one column "
+                "per month, oldest on the left. No monthly-average column is needed - it is calculated for you.")
         return
 
-    df, error = load_and_prepare(uploaded)
+    with st.expander("⚙️ Month columns detected / columns to ignore", expanded=False):
+        ignore_txt = st.text_input("Columns to ignore (comma-separated, e.g. Price, Cost)", key="analysis_ignore")
+    exclude_cols = [c.strip() for c in ignore_txt.split(",") if c.strip()] if ignore_txt else []
+
+    df, error = de_load_and_prepare(uploaded, exclude_cols=exclude_cols)
     if error:
         st.error(error)
         return
 
-    df = compute_status(df)
+    meta = dict(df.attrs)                      # keep audit tables before further processing
+    months = meta["months"]
+    df = de_compute_status(df)
+    df.attrs = {}                              # keep the big audit tables out of every dataframe slice
+
+    st.caption(f"Sales sheet **{meta['sales_sheet']}** · Stock sheet **{meta['stock_sheet']}** · "
+               f"**{len(months)} months** detected ({months[0]} → {months[-1]}). "
+               "Monthly average is availability-adjusted: stockout months excluded, promo / bulk spikes normalised, "
+               "EOL / discontinued items never counted as stockouts.")
 
     # ---------------- KPI Row ----------------
+    in_play = df[~df["Status"].isin(["EOL / Run-down", "No Stock / No Demand"])]
     total_units_stock = int(df["Current_Stock"].sum())
     total_units_sold = int(df["Total_Sold"].sum())
-    stockout_pct = (df["Status"] == "Stockout").mean() * 100
-    dead_pct = (df["Status"] == "Dead Stock").mean() * 100
+    clean_per_month = float(df["Monthly_Avg"].sum())
+    stockout_pct = (in_play["Status"] == "Stockout").mean() * 100 if len(in_play) else 0
+    dead_pct = (in_play["Status"] == "Dead Stock").mean() * 100 if len(in_play) else 0
 
-    k1, k2, k3, k4, k5, k6 = st.columns(6)
+    k1, k2, k3, k4, k5, k6, k7 = st.columns(7)
     k1.metric("Products", f"{df['Product_Key'].nunique():,}")
     k2.metric("Branches", f"{df['Branch'].nunique():,}")
     k3.metric("Units in Stock", f"{total_units_stock:,}")
-    k4.metric("Units Sold (period)", f"{total_units_sold:,}")
-    k5.metric("Stockout Rate", f"{stockout_pct:.1f}%")
-    k6.metric("Dead Stock Rate", f"{dead_pct:.1f}%")
+    k4.metric(f"Units Sold ({len(months)} mths)", f"{total_units_sold:,}")
+    k5.metric("Clean Units / Month", f"{clean_per_month:,.0f}")
+    k6.metric("Stockout Rate", f"{stockout_pct:.1f}%")
+    k7.metric("Dead Stock Rate", f"{dead_pct:.1f}%")
 
     st.markdown(
         '<div class="insight-banner">💡 Use the tabs below to explore stock health, '
@@ -1003,10 +1392,10 @@ def data_analysis():
     total_branches_all = df["Branch"].nunique()
 
     (tab_overview, tab_bestsellers, tab_dead, tab_branch, tab_aging,
-     tab_status_gaps, tab_replenish, tab_coverage) = st.tabs(
+     tab_status_gaps, tab_replenish, tab_coverage, tab_quality) = st.tabs(
         ["📦 Stock Health Overview", "⭐ Best Sellers & Stockout Risk", "⚫ Dead & Slow Stock",
          "🏬 Branch Performance", "⏳ Stock Aging", "🏷️ Availability Gaps", "🔁 Replenishment Monitor",
-         "📶 Branch Coverage"]
+         "📶 Branch Coverage", "🧪 Demand Quality"]
     )
 
     # ---- Overview ----
@@ -1019,11 +1408,7 @@ def data_analysis():
             fig_pie = px.pie(
                 status_counts, names="Status", values="Count", hole=0.45,
                 title="Stock Status Distribution (SKU-Branch level)",
-                color="Status",
-                color_discrete_map={
-                    "Healthy": "#16a34a", "Stockout": "#dc2626",
-                    "Dead Stock": "#374151", "Overstock": "#ea580c", "Slow-moving": "#f59e0b"
-                }
+                color="Status", color_discrete_map=DE_STATUS_COLORS
             )
             fig_pie.update_layout(margin=dict(t=60, b=10, l=10, r=10))
             st.plotly_chart(fig_pie, use_container_width=True)
@@ -1031,11 +1416,7 @@ def data_analysis():
             by_branch_status = df.groupby(["Branch", "Status"]).size().reset_index(name="Count")
             fig_stack = px.bar(
                 by_branch_status, x="Branch", y="Count", color="Status", barmode="stack",
-                title="Stock Status by Branch",
-                color_discrete_map={
-                    "Healthy": "#16a34a", "Stockout": "#dc2626",
-                    "Dead Stock": "#374151", "Overstock": "#ea580c", "Slow-moving": "#f59e0b"
-                }
+                title="Stock Status by Branch", color_discrete_map=DE_STATUS_COLORS
             )
             fig_stack.update_layout(margin=dict(t=60, b=10, l=10, r=10), xaxis_tickangle=-35)
             st.plotly_chart(fig_stack, use_container_width=True)
@@ -1044,33 +1425,37 @@ def data_analysis():
     with tab_bestsellers:
         product_summary = df.groupby(["Product_Key", "Brand", "ItemGroup1", "Model No"], as_index=False).agg(
             Total_Sold=("Total_Sold", "sum"),
+            Clean_Monthly_Avg=("Monthly_Avg", "sum"),
             Total_Stock=("Current_Stock", "sum"),
-            Branches_Stocked=("Branch", "nunique")
+            Branches_Stocked=("Current_Stock", lambda s: int((s > 0).sum()))
         )
+        product_summary["Clean_Monthly_Avg"] = product_summary["Clean_Monthly_Avg"].round(1)
         product_summary["Branches_at_Stockout"] = df[df["Status"] == "Stockout"].groupby("Product_Key")["Branch"].nunique().reindex(product_summary["Product_Key"]).fillna(0).values
 
         top_n = st.slider("Show top N best sellers", 5, 30, 15, key="topn_bestsellers")
-        top_sellers = product_summary.sort_values("Total_Sold", ascending=False).head(top_n)
+        top_sellers = product_summary.sort_values("Clean_Monthly_Avg", ascending=False).head(top_n)
 
         fig_top = px.bar(
-            top_sellers.sort_values("Total_Sold"), x="Total_Sold", y="Model No", orientation="h",
+            top_sellers.sort_values("Clean_Monthly_Avg"), x="Clean_Monthly_Avg", y="Model No", orientation="h",
             color="Branches_at_Stockout", color_continuous_scale="Reds",
-            title=f"Top {top_n} Best-Selling SKUs (colour = branches currently stocked out)",
-            hover_data=["Brand", "ItemGroup1", "Total_Stock"]
+            title=f"Top {top_n} Best-Selling SKUs by clean monthly sales (colour = branches currently stocked out)",
+            hover_data=["Brand", "ItemGroup1", "Total_Sold", "Total_Stock"]
         )
         fig_top.update_layout(margin=dict(t=60, b=10, l=10, r=10))
         st.plotly_chart(fig_top, use_container_width=True)
 
         st.markdown("#### 🚨 Best Sellers That Can't Afford a Stockout")
-        st.caption("High-selling SKUs that are currently out of stock (or nearly out) in one or more branches.")
+        st.caption("High-selling SKUs that are currently out of stock in one or more branches. "
+                   "EOL / discontinued items are never listed here.")
         risk = top_sellers[top_sellers["Branches_at_Stockout"] > 0].sort_values(
-            ["Branches_at_Stockout", "Total_Sold"], ascending=[False, False]
+            ["Branches_at_Stockout", "Clean_Monthly_Avg"], ascending=[False, False]
         )
         if len(risk) == 0:
             st.success("None of your top sellers are currently at risk of stockout. 🎉")
         else:
             st.dataframe(
-                risk[["Brand", "ItemGroup1", "Model No", "Total_Sold", "Total_Stock", "Branches_Stocked", "Branches_at_Stockout"]],
+                risk[["Brand", "ItemGroup1", "Model No", "Clean_Monthly_Avg", "Total_Sold", "Total_Stock",
+                      "Branches_Stocked", "Branches_at_Stockout"]],
                 use_container_width=True, height=350
             )
             st.download_button(
@@ -1104,7 +1489,8 @@ def data_analysis():
             st.plotly_chart(fig_dead_branch, use_container_width=True)
 
         st.dataframe(
-            dead_df[["Branch", "Brand", "ItemGroup1", "Model No", "Current_Stock", "Total_Sold", "Months_Cover", "Status"]]
+            dead_df[["Branch", "Brand", "ItemGroup1", "Model No", "Current_Stock", "Total_Sold", "Monthly_Avg",
+                     "Months_Cover", "Status"]]
             .sort_values("Current_Stock", ascending=False),
             use_container_width=True, height=350
         )
@@ -1113,10 +1499,12 @@ def data_analysis():
     with tab_branch:
         branch_summary = df.groupby("Branch", as_index=False).agg(
             Total_Sold=("Total_Sold", "sum"),
+            Clean_Monthly_Avg=("Monthly_Avg", "sum"),
             Current_Stock=("Current_Stock", "sum"),
             Stockouts=("Status", lambda s: (s == "Stockout").sum()),
             Dead_Stock=("Status", lambda s: (s == "Dead Stock").sum())
         ).sort_values("Total_Sold", ascending=False)
+        branch_summary["Clean_Monthly_Avg"] = branch_summary["Clean_Monthly_Avg"].round(1)
 
         fig_branch_sales = px.bar(
             branch_summary, x="Branch", y="Total_Sold", title="Total Units Sold by Branch",
@@ -1135,7 +1523,7 @@ def data_analysis():
 
     # ---- Stock Aging ----
     with tab_aging:
-        aging_df = df[df["Monthly_Avg"] > 0].copy()
+        aging_df = df[(df["Monthly_Avg"] > 0) & (~df["Is_EOL"])].copy()
         aging_df["Months_Cover_Capped"] = aging_df["Months_Cover"].clip(upper=24)
 
         fig_hist = px.histogram(
@@ -1146,7 +1534,9 @@ def data_analysis():
         fig_hist.update_layout(margin=dict(t=60, b=10, l=10, r=10))
         st.plotly_chart(fig_hist, use_container_width=True)
 
-        st.caption("SKU-branches sitting far to the right are aging heavily relative to their own sales — good candidates for the Aged Stock Transfer module.")
+        st.caption("SKU-branches sitting far to the right are aging heavily relative to their own clean sales — "
+                   "good candidates for the Aged Stock Transfer module. EOL items are shown in the "
+                   "'EOL / Run-down' status instead.")
 
     # ---- Availability Gaps (active supplier-status SKUs missing from some branches) ----
     with tab_status_gaps:
@@ -1154,7 +1544,7 @@ def data_analysis():
         st.caption(
             "Filters by the 'Supplier Product Status' column on your Stocks sheet (e.g. Available / REG / New / "
             "Repl), then flags any of those items that have sold before but currently sit at zero stock in one "
-            "or more branches."
+            "or more branches. EOL / discontinued items are always left out."
         )
 
         known_statuses = sorted([s for s in df["Supplier_Status"].unique() if s])
@@ -1166,15 +1556,14 @@ def data_analysis():
                 "Available, REG, New, Repl, Discontinued, etc. to unlock this report."
             )
         else:
-            exclude_keywords = ["DISC", "EOL", "OBSOLETE", "DELIST", "STOP", "DEAD"]
-            default_selected = [s for s in known_statuses if not any(k in s.upper() for k in exclude_keywords)]
+            default_selected = [s for s in known_statuses if not df.loc[df["Supplier_Status"] == s, "Is_EOL"].any()]
 
             selected_status = st.multiselect(
                 "Include supplier statuses", known_statuses,
                 default=default_selected if default_selected else known_statuses
             )
 
-            filtered = df[df["Supplier_Status"].isin(selected_status)]
+            filtered = df[df["Supplier_Status"].isin(selected_status) & (~df["Is_EOL"])]
 
             if len(filtered) == 0:
                 st.warning("No rows match the selected supplier status.")
@@ -1183,9 +1572,11 @@ def data_analysis():
                     ["Product_Key", "Brand", "ItemGroup1", "Model No", "Supplier_Status"], as_index=False
                 ).agg(
                     Total_Sold=("Total_Sold", "sum"),
+                    Clean_Monthly_Avg=("Monthly_Avg", "sum"),
                     Branches_With_Stock=("Current_Stock", lambda s: int((s > 0).sum())),
                     Branches_Total=("Branch", "nunique")
                 )
+                prod["Clean_Monthly_Avg"] = prod["Clean_Monthly_Avg"].round(1)
                 prod["Branches_Without_Stock"] = prod["Branches_Total"] - prod["Branches_With_Stock"]
 
                 missing_map = (
@@ -1198,7 +1589,7 @@ def data_analysis():
                 prod["Branches_Missing_Stock"] = prod["Branches_Missing_Stock"].fillna("")
 
                 gaps = prod[(prod["Total_Sold"] > 0) & (prod["Branches_Without_Stock"] > 0)].sort_values(
-                    ["Branches_Without_Stock", "Total_Sold"], ascending=[False, False]
+                    ["Branches_Without_Stock", "Clean_Monthly_Avg"], ascending=[False, False]
                 )
 
                 m1, m2, m3 = st.columns(3)
@@ -1214,13 +1605,13 @@ def data_analysis():
                         x="Branches_Without_Stock", y="Model No", orientation="h",
                         color="Supplier_Status",
                         title="Top 20 Active SKUs Missing From The Most Branches",
-                        hover_data=["Brand", "ItemGroup1", "Total_Sold"]
+                        hover_data=["Brand", "ItemGroup1", "Total_Sold", "Clean_Monthly_Avg"]
                     )
                     fig_gap.update_layout(margin=dict(t=60, b=10, l=10, r=10))
                     st.plotly_chart(fig_gap, use_container_width=True)
 
                     st.dataframe(
-                        gaps[["Brand", "ItemGroup1", "Model No", "Supplier_Status", "Total_Sold",
+                        gaps[["Brand", "ItemGroup1", "Model No", "Supplier_Status", "Clean_Monthly_Avg", "Total_Sold",
                               "Branches_With_Stock", "Branches_Without_Stock", "Branches_Total",
                               "Branches_Missing_Stock"]],
                         use_container_width=True, height=400
@@ -1236,24 +1627,25 @@ def data_analysis():
     with tab_replenish:
         st.markdown("#### Branches that sold out and haven't been replenished")
         st.caption(
-            "Flags branch-SKUs that are currently at zero stock but have registered sales (meaning they did "
-            "sell through), while the same item is still available with stock in at least one other branch — "
-            "a sign that branch isn't being replenished."
+            "Flags branch-SKUs that are currently at zero stock but have a clean monthly demand (they sold "
+            "through), while the same item is still available with stock in at least one other branch — "
+            "a sign that branch isn't being replenished. EOL / discontinued items are excluded."
         )
 
         stock_by_product = df[df["Current_Stock"] > 0].groupby("Product_Key")["Branch"].nunique()
 
-        candidates = df[(df["Current_Stock"] <= 0) & (df["Total_Sold"] > 0)].copy()
+        candidates = df[(df["Current_Stock"] <= 0) & (df["Monthly_Avg"] > 0) & (~df["Is_EOL"])].copy()
         candidates = candidates[candidates["Product_Key"].isin(stock_by_product.index)]
         candidates = candidates.merge(
             stock_by_product.rename("Branches_With_Stock_Elsewhere"), on="Product_Key", how="left"
         )
+        candidates["Monthly_Avg"] = candidates["Monthly_Avg"].round(1)
 
         if len(candidates) == 0:
             st.success("No un-replenished, sold-out branch-SKUs detected. 🎉")
         else:
             candidates = candidates.sort_values(
-                ["Total_Sold", "Branches_With_Stock_Elsewhere"], ascending=[False, False]
+                ["Monthly_Avg", "Branches_With_Stock_Elsewhere"], ascending=[False, False]
             )
 
             m1, m2 = st.columns(2)
@@ -1261,16 +1653,16 @@ def data_analysis():
             m2.metric("Distinct SKUs Affected", f"{candidates['Product_Key'].nunique():,}")
 
             fig_replenish = px.bar(
-                candidates.head(20).sort_values("Total_Sold"),
-                x="Total_Sold", y="Model No", orientation="h", color="Branch",
-                title="Top 20 Sold-Out, Un-replenished Branch-SKUs (by units sold)",
+                candidates.head(20).sort_values("Monthly_Avg"),
+                x="Monthly_Avg", y="Model No", orientation="h", color="Branch",
+                title="Top 20 Sold-Out, Un-replenished Branch-SKUs (by clean monthly sales)",
                 hover_data=["Brand", "ItemGroup1", "Branches_With_Stock_Elsewhere"]
             )
             fig_replenish.update_layout(margin=dict(t=60, b=10, l=10, r=10))
             st.plotly_chart(fig_replenish, use_container_width=True)
 
             display_cols = ["Branch", "Brand", "ItemGroup1", "Model No", "Supplier_Status",
-                             "Total_Sold", "Branches_With_Stock_Elsewhere"]
+                            "Monthly_Avg", "Total_Sold", "Branches_With_Stock_Elsewhere"]
             st.dataframe(candidates[display_cols], use_container_width=True, height=400)
             st.download_button(
                 "⬇️ Download Replenishment Monitor Report",
@@ -1319,7 +1711,7 @@ def data_analysis():
 
             st.dataframe(
                 low_coverage[["Brand", "ItemGroup1", "Model No", "Supplier_Status",
-                               "Branches_With_Stock", "Total_Branches", "Total_Sold"]],
+                              "Branches_With_Stock", "Total_Branches", "Total_Sold"]],
                 use_container_width=True, height=400
             )
             st.download_button(
@@ -1328,6 +1720,55 @@ def data_analysis():
                 file_name=f"Low_Branch_Coverage_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
+
+    # ---- Demand Quality (new): shows exactly what the engine adjusted ----
+    with tab_quality:
+        st.markdown("#### How the clean monthly average was built")
+        st.caption(
+            "Stockout months (others still selling normally) and not-yet-listed months are excluded. Network-wide "
+            "promo months are normalised to normal level. One-off bulk sales in a single branch are capped. "
+            "EOL / discontinued items only lose their trailing zero months and are never flagged as stockouts."
+        )
+        q1, q2, q3, q4 = st.columns(4)
+        q1.metric("Months of sales uploaded", f"{len(months)}")
+        q2.metric("Rows with stockout months excluded", f"{int((df['Stockout_Months_Excluded'] > 0).sum()):,}")
+        q3.metric("Rows with promo months normalised", f"{int((df['Promo_Months_Normalised'] > 0).sum()):,}")
+        q4.metric("Rows with bulk sales capped", f"{int((df['Bulk_Months_Capped'] > 0).sum()):,}")
+
+        fs = de_month_flag_summary(meta["flags"], months)
+        fs_long = fs.melt(id_vars="Month", var_name="Adjustment", value_name="Branch-SKUs")
+        fig_flags = px.bar(fs_long, x="Month", y="Branch-SKUs", color="Adjustment", barmode="group",
+                           title="Adjustments applied per month (count of branch-SKU cells)",
+                           category_orders={"Month": months})
+        fig_flags.update_layout(margin=dict(t=60, b=10, l=10, r=10))
+        st.plotly_chart(fig_flags, use_container_width=True)
+
+        top_c = (df.groupby(["Product_Key", "Model No"], as_index=False)
+                   .agg(Raw=("Raw_Monthly_Avg", "sum"), Clean=("Monthly_Avg", "sum"))
+                   .sort_values("Clean", ascending=False).head(20))
+        top_long = top_c.melt(id_vars=["Product_Key", "Model No"], value_vars=["Raw", "Clean"],
+                              var_name="Average", value_name="Units / month")
+        fig_rc = px.bar(top_long, x="Model No", y="Units / month", color="Average", barmode="group",
+                        title="Top 20 items: raw average vs clean average (units / month)")
+        fig_rc.update_layout(margin=dict(t=60, b=10, l=10, r=10), xaxis_tickangle=-35)
+        st.plotly_chart(fig_rc, use_container_width=True)
+
+        adj = df[df["Adjustment_Note"] != ""].copy()
+        adj["Change_%"] = np.where(adj["Raw_Monthly_Avg"] > 0,
+                                   (adj["Monthly_Avg"] / adj["Raw_Monthly_Avg"] - 1) * 100, 0).round(0)
+        adj = adj.sort_values("Change_%", key=lambda s: s.abs(), ascending=False)
+        st.markdown("#### Items where the adjustment changed the average the most")
+        st.dataframe(
+            adj[["Branch", "Model No", "Supplier_Status", "Raw_Monthly_Avg", "Monthly_Avg", "Change_%",
+                 "Months_Used", "Confidence", "Adjustment_Note"]].round(2),
+            use_container_width=True, height=400
+        )
+        st.download_button(
+            "⬇️ Download Sales Sheet With Clean Monthly Average (+ month-by-month flags)",
+            data=de_build_enriched_sales_excel(meta),
+            file_name=f"Sales_With_Clean_Avg_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
 
 # -------------------------------------------------
 # MODULE 5: Aged Stock Transfer
