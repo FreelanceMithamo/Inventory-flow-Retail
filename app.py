@@ -155,7 +155,7 @@ st.markdown("""
 # -------------------------------------------------
 # Auth State
 # -------------------------------------------------
-if "users" not in st.session_state:
+if "users" not in st.session_state.users:
     st.session_state.users = {}
 
 st.session_state.users["Administrator"] = "Jose2024"
