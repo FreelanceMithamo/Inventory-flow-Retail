@@ -153,17 +153,15 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # -------------------------------------------------
+# -------------------------------------------------
 # Auth State
 # -------------------------------------------------
-if "demo" not in st.session_state.users:
+if "users" not in st.session_state:
     st.session_state.users = {}
 
 st.session_state.users["Administrator"] = "Jose2024"
-
-if "demo" not in st.session_state.users:
-    st.session_state.users["demo"] = "demo123"
-if "manager" not in st.session_state.users:
-    st.session_state.users["manager"] = "branch123"
+st.session_state.users.setdefault("demo", "demo123")
+st.session_state.users.setdefault("manager", "branch123")
 
 if "pending_resets" not in st.session_state:
     st.session_state.pending_resets = []
