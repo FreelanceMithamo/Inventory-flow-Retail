@@ -287,7 +287,7 @@ def load_and_prepare_v2(
 
     sb = _pick(sales_raw.columns, KEY_BRANCH)
     sm = _pick(sales_raw.columns, KEY_MODEL)
-    tb = _pick(stock_raw.columns, KEY_BRANCH)
+    tb = _pick(stock_raw.columns, KEY_BRANCH)   # may be None for wide format
     tm = _pick(stock_raw.columns, KEY_MODEL)
 
     if not (sb and sm):
@@ -295,9 +295,9 @@ def load_and_prepare_v2(
             f"Sales sheet '{sname}': could not find Branch / Model columns. "
             f"Found: {list(sales_raw.columns)}"
         )
-    if not (tb and tm):
+    if not tm:
         return None, (
-            f"Stocks sheet '{tname}': could not find Branch / Model columns. "
+            f"Stocks sheet '{tname}': could not find a Model / SKU column. "
             f"Found: {list(stock_raw.columns)}"
         )
 
@@ -327,8 +327,9 @@ def load_and_prepare_v2(
     sales = sales.groupby(["Branch", "Product_Key"], as_index=False).agg(agg)
 
     # ---- Stock ----
-    t_brand = _pick(stock_raw.columns, KEY_BRAND, [tb, tm])
-    t_group = _pick(stock_raw.columns, KEY_GROUP, [tb, tm, t_brand])
+    # Support BOTH long format (has a Branch column) and wide format (branch names as columns).
+    t_brand = _pick(stock_raw.columns, KEY_BRAND, [tm] if tm else [])
+    t_group = _pick(stock_raw.columns, KEY_GROUP, [c for c in (tm, t_brand) if c])
 
     # Status: user override → auto-detect → search other sheets
     t_status = None
@@ -337,7 +338,7 @@ def load_and_prepare_v2(
         t_status = status_col
         status_source = f"Stocks sheet column '{status_col}' (user override)"
     else:
-        t_status = _pick(stock_raw.columns, KEY_STATUS, [tb, tm])
+        t_status = _pick(stock_raw.columns, KEY_STATUS, [c for c in (tm, t_brand) if c])
         if t_status:
             status_source = f"Stocks sheet column '{t_status}'"
 
@@ -350,7 +351,6 @@ def load_and_prepare_v2(
                 other = _read_sheet(xl, sh)
                 cand = _pick(other.columns, KEY_STATUS)
                 if cand:
-                    # build a product→status map
                     om = _pick(other.columns, KEY_MODEL)
                     if om:
                         tmp = other[[om, cand]].copy()
@@ -371,22 +371,93 @@ def load_and_prepare_v2(
             except Exception:
                 continue
 
+    # Detect wide vs long format
+    has_branch_col = tb is not None
+    # Also treat as long if a clear quantity column exists alongside Branch
     sup_cols = [c for c in stock_raw.columns if "supplier" in _clean(c)]
-    t_qty = _pick(stock_raw.columns, KEY_QTY, [tb, tm, t_status, *sup_cols] if t_status else [tb, tm, *sup_cols])
+    t_qty = _pick(
+        stock_raw.columns,
+        KEY_QTY,
+        [c for c in (tb, tm, t_status, *sup_cols) if c],
+    )
 
-    stock = pd.DataFrame({
-        "Branch": stock_raw[tb].astype(str).str.strip().str.upper(),
-        "Product_Key": stock_raw[tm].astype(str).str.strip().str.upper(),
-        "Model No_s": stock_raw[tm].astype(str).str.strip(),
-        "Brand_s": stock_raw[t_brand].astype(str).str.strip() if t_brand else "",
-        "ItemGroup1_s": stock_raw[t_group].astype(str).str.strip() if t_group else "",
-        "Supplier_Status": (
-            stock_raw[t_status].astype(str).str.strip() if t_status else ""
-        ),
-        "Current_Stock": (
-            pd.to_numeric(stock_raw[t_qty], errors="coerce").fillna(0) if t_qty else 0
-        ),
-    })
+    if has_branch_col and t_qty:
+        # ----- LONG FORMAT -----
+        stock = pd.DataFrame({
+            "Branch": stock_raw[tb].astype(str).str.strip().str.upper(),
+            "Product_Key": stock_raw[tm].astype(str).str.strip().str.upper(),
+            "Model No_s": stock_raw[tm].astype(str).str.strip(),
+            "Brand_s": stock_raw[t_brand].astype(str).str.strip() if t_brand else "",
+            "ItemGroup1_s": stock_raw[t_group].astype(str).str.strip() if t_group else "",
+            "Supplier_Status": (
+                stock_raw[t_status].astype(str).str.strip() if t_status else ""
+            ),
+            "Current_Stock": pd.to_numeric(stock_raw[t_qty], errors="coerce").fillna(0),
+        })
+    else:
+        # ----- WIDE FORMAT (branch names as columns) -----
+        id_vars = [tm]
+        if t_brand:
+            id_vars.append(t_brand)
+        if t_group:
+            id_vars.append(t_group)
+        if t_status and t_status in stock_raw.columns:
+            id_vars.append(t_status)
+
+        branch_cols = [
+            c for c in stock_raw.columns
+            if c not in id_vars
+            and "total" not in str(c).lower()
+            and not str(c).lower().startswith("unnamed")
+            and "status" not in _clean(c)
+            and "warehouse" not in _clean(c)
+            and "display" not in _clean(c)
+        ]
+        if not branch_cols:
+            return None, (
+                f"Stocks sheet '{tname}': could not find branch stock columns. "
+                f"Found: {list(stock_raw.columns)}"
+            )
+
+        wide = stock_raw.copy()
+        rename = {tm: "Model No_s"}
+        if t_brand:
+            rename[t_brand] = "Brand_s"
+        if t_group:
+            rename[t_group] = "ItemGroup1_s"
+        if t_status and t_status in wide.columns:
+            rename[t_status] = "Supplier_Status"
+        wide = wide.rename(columns=rename)
+        if "Brand_s" not in wide.columns:
+            wide["Brand_s"] = ""
+        if "ItemGroup1_s" not in wide.columns:
+            wide["ItemGroup1_s"] = ""
+        if "Supplier_Status" not in wide.columns:
+            wide["Supplier_Status"] = ""
+
+        for col in ["Model No_s", "Brand_s", "ItemGroup1_s", "Supplier_Status"]:
+            wide[col] = wide[col].fillna("").astype(str).str.strip()
+
+        wide["Product_Key"] = wide["Model No_s"].str.upper()
+
+        stock = wide.melt(
+            id_vars=["Product_Key", "Model No_s", "Brand_s", "ItemGroup1_s", "Supplier_Status"],
+            value_vars=branch_cols,
+            var_name="Branch",
+            value_name="Current_Stock",
+        )
+        stock["Branch"] = stock["Branch"].astype(str).str.strip().str.upper()
+        stock["Current_Stock"] = (
+            pd.to_numeric(
+                stock["Current_Stock"].replace(r"^\s*-\s*$", 0, regex=True),
+                errors="coerce",
+            )
+            .fillna(0)
+            .clip(lower=0)
+        )
+        # Drop residual "Total" style columns that slipped through
+        stock = stock[~stock["Branch"].str.contains("TOTAL", case=False, na=False)]
+
     stock = stock[~stock["Branch"].isin(["", "NAN"]) & ~stock["Product_Key"].isin(["", "NAN"])]
     stock = stock.groupby(["Branch", "Product_Key"], as_index=False).agg({
         "Model No_s": "first",
@@ -395,6 +466,10 @@ def load_and_prepare_v2(
         "Supplier_Status": _first,
         "Current_Stock": "sum",
     })
+
+    # Normalise Product_Key on sales side the same way (model only) so wide/long both match
+    # (Brand + Group can differ slightly between sheets)
+    sales["Product_Key"] = sales["Model No"].astype(str).str.strip().str.upper()
 
     full = sales.merge(stock, on=["Branch", "Product_Key"], how="outer")
     full[months] = full[months].fillna(0)
