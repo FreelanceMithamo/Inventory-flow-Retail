@@ -150,9 +150,8 @@ st.markdown("""
         margin-top: 2.5rem;
     }
 </style>
-""", unsafe_allow_html=True)
+", unsafe_allow_html=True)
 
-# -------------------------------------------------
 # -------------------------------------------------
 # Auth State
 # -------------------------------------------------
@@ -160,8 +159,11 @@ if "users" not in st.session_state:
     st.session_state.users = {}
 
 st.session_state.users["Administrator"] = "Jose2024"
-st.session_state.users.setdefault("demo", "demo123")
-st.session_state.users.setdefault("manager", "branch123")
+
+if "demo" not in st.session_state.users:
+    st.session_state.users["demo"] = "demo123"
+if "manager" not in st.session_state.users:
+    st.session_state.users["manager"] = "branch123"
 
 if "pending_resets" not in st.session_state:
     st.session_state.pending_resets = []
@@ -957,6 +959,10 @@ def smart_lpo():
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         use_container_width=True
     )
+
+# -------------------------------------------------
+# MODULE 4: Data Analysis & Insights
+# -------------------------------------------------
 # ==========================================================================
 #  DATA ANALYSIS & INSIGHTS - single-section replacement
 #  Paste this whole block over your old data_analysis() function.
@@ -991,12 +997,9 @@ DE_KEY_BRANCH = ["branch", "store", "outlet", "shop", "location", "site"]
 DE_KEY_MODEL = ["model no", "modelno", "model number", "model", "item code", "sku", "product code", "material", "code"]
 DE_KEY_BRAND = ["brand", "make", "manufacturer"]
 DE_KEY_GROUP = ["itemgroup1", "item group 1", "item group", "itemgroup", "product group", "category", "group"]
-DE_KEY_STATUS = ["supplier product status", "product status", "supplier status", "item status", "status"]
-DE_STATUS_TOKENS = ["REG", "EOL", "DISC", "NEW", "REPL", "AVAIL", "SAMPLE", "OBSOLETE", "ACTIVE", "DELIST", "PHASE"]
+DE_KEY_STATUS = ["supplier product status", "product status", "item status", "status"]
 DE_KEY_QTY = ["current stock", "stock on hand", "on hand", "soh", "quantity", "qty", "balance", "units", "stock"]
-DE_AVG_STRICT = ["avg", "average", "mean", "per month", "grand"]      # always an average column
-DE_AVG_SOFT = ["total", "sum", "monthly", "ytd"]                      # only if the header is not itself a month
-DE_AVG_WORDS = DE_AVG_STRICT + DE_AVG_SOFT
+DE_AVG_WORDS = ["avg", "average", "mean", "total", "sum", "monthly", "per month", "grand"]
 DE_HEADER_WORDS = ["branch", "store", "model", "brand", "group", "stock", "status", "qty", "quantity", "item", "code", "sku"]
 
 
@@ -1052,100 +1055,24 @@ def de_find_sheets(xl):
     raise ValueError("The workbook needs a Sales sheet and a Stocks sheet.")
 
 
-DE_MONTH_RE = re.compile(r"\b(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\b")
-DE__BLANKS = ["", "-", "\u2013", "\u2014", "nan", "NaN", "None"]
-
-
-def de_num_info(s):
-    """Tolerant numeric read: '1,234' -> 1234; blank, '-' and None count as blank (= no sales), not as text."""
-    if s.dtype == object:
-        t = s.astype(str).str.replace(",", "", regex=False).str.strip()
-        blank = t.isin(DE__BLANKS) | s.isna()
-        v = pd.to_numeric(t.where(~blank), errors="coerce")
-    else:
-        blank = s.isna()
-        v = pd.to_numeric(s, errors="coerce")
-    nonblank = int((~blank).sum())
-    return v, blank, (v.notna().sum() / nonblank if nonblank else 0.0), nonblank
-
-
-def de_num(s):
-    return de_num_info(s)[0]
-
-
-def de_month_cols(df, id_cols, force=()):
-    """Returns (month columns left-to-right, diagnostics table explaining every other column)."""
-    cands, diag = [], []
-    force = set(force)
+def de_month_cols(df, id_cols):
+    cands = []
     for c in df.columns:
-        l = de_clean(c)
-        if c in id_cols:
-            diag.append((c, "no", "identifier column (branch / model / brand / group)")); continue
-        if c in force:
-            cands.append(c); diag.append((c, "yes", "forced by you")); continue
-        looks_month = bool(DE_MONTH_RE.search(l))
-        if any(w in l for w in DE_AVG_STRICT) or (any(w in l for w in DE_AVG_SOFT) and not looks_month):
-            diag.append((c, "no", "looks like an average / total column")); continue
-        _, blank, share, nonblank = de_num_info(df[c])
-        if nonblank == 0:
-            if looks_month:
-                cands.append(c); diag.append((c, "yes", "month header, no sales in it (all blank = 0)"))
-            else:
-                diag.append((c, "no", "empty column"))
-        elif share >= 0.9:
-            cands.append(c); diag.append((c, "yes", "month column (blank / '-' cells counted as 0)"))
-        else:
-            diag.append((c, "no", f"mostly text ({share:.0%} numeric) - if this is a month, add it under 'force'"))
+        if c in id_cols or any(w in de_clean(c) for w in DE_AVG_WORDS):
+            continue
+        if pd.to_numeric(df[c], errors="coerce").notna().mean() >= 0.6:
+            cands.append(c)
     # drop a trailing column that is just the old "monthly average" (row-mean of the others, mostly decimals)
-    if len(cands) >= 3 and cands[-1] not in force:
-        M = df[cands[:-1]].apply(de_num).fillna(0)
-        last = de_num(df[cands[-1]]).fillna(0)
+    if len(cands) >= 3:
+        M = df[cands[:-1]].apply(pd.to_numeric, errors="coerce").fillna(0)
+        last = pd.to_numeric(df[cands[-1]], errors="coerce").fillna(0)
         active = (M.sum(axis=1) > 0) | (last > 0)
         if active.sum() >= 20:
             close = (np.abs(M.mean(axis=1) - last) <= 0.51)[active].mean()
             decimals = ((last % 1) != 0)[active].mean()
             if close >= 0.9 and decimals >= 0.2:
-                diag = [(c, "no", "dropped: equals the average of the other months") if c == cands[-1] else (c, a, r) for c, a, r in diag]
                 cands = cands[:-1]
-    # drop a trailing "total" column that equals the sum of the other months
-    if len(cands) >= 3 and cands[-1] not in force and any(w in de_clean(cands[-1]) for w in DE_AVG_SOFT):
-        M = df[cands[:-1]].apply(de_num).fillna(0)
-        last = de_num(df[cands[-1]]).fillna(0)
-        active = (M.sum(axis=1) > 0) | (last > 0)
-        if active.sum() >= 20 and (np.abs(M.sum(axis=1) - last) <= 0.51)[active].mean() >= 0.95:
-            diag = [(c, "no", "dropped: equals the total of the other months") if c == cands[-1] else (c, a, r) for c, a, r in diag]
-            cands = cands[:-1]
-    return cands, pd.DataFrame(diag, columns=["Column", "Used as month?", "Reason"])
-
-
-def de_status_by_content(df, exclude):
-    """Fallback when no header says 'status': find a low-variety text column whose values look like product statuses."""
-    best, best_score = None, 0.0
-    for c in df.columns:
-        if c in exclude:
-            continue
-        col = df[c].dropna()
-        if len(col) < 5 or pd.to_numeric(col, errors="coerce").notna().mean() > 0.5:
-            continue
-        v = col.astype(str).str.strip().str.upper()
-        if v.nunique() > max(40, 0.2 * len(v)):          # statuses repeat; descriptions / codes do not
-            continue
-        hit = v.map(lambda t: any(k in t for k in DE_STATUS_TOKENS)).mean()
-        if hit >= 0.3 and hit > best_score:
-            best, best_score = c, hit
-    return best
-
-
-def de_find_status(df, label, exclude, status_col=None):
-    if status_col and status_col in df.columns:
-        return status_col, f"{label}: column '{status_col}' (chosen by you)"
-    c = de_pick(df.columns, DE_KEY_STATUS, exclude)
-    if c:
-        return c, f"{label}: column '{c}'"
-    c = de_status_by_content(df, exclude)
-    if c:
-        return c, f"{label}: column '{c}' (recognised by its values - header has no 'status')"
-    return None, ""
+    return cands
 
 
 def de_first(s):
@@ -1235,7 +1162,7 @@ def de_analyse_product(S, stock, eol):
     }
 
 
-def de_load_and_prepare(uploaded, exclude_cols=(), status_col=None, force_months=()):
+def de_load_and_prepare(uploaded, exclude_cols=()):
     """Returns (df, error). df is one row per Branch x Product with clean demand. Extra tables are in df.attrs."""
     try:
         xl = pd.ExcelFile(uploaded)
@@ -1254,12 +1181,12 @@ def de_load_and_prepare(uploaded, exclude_cols=(), status_col=None, force_months
     s_brand = de_pick(sales_raw.columns, DE_KEY_BRAND, [sb, sm])
     s_group = de_pick(sales_raw.columns, DE_KEY_GROUP, [sb, sm, s_brand])
     idc = {c for c in (sb, sm, s_brand, s_group) if c}
-    months, month_diag = de_month_cols(sales_raw, idc | set(exclude_cols), force_months)
+    months = de_month_cols(sales_raw, idc | set(exclude_cols))
     if not months:
         return None, f"No month columns found on '{sname}'. Columns seen: {list(sales_raw.columns)}"
 
     # ---- sales (any number of months) ----
-    M = sales_raw[months].apply(de_num).fillna(0)
+    M = sales_raw[months].apply(pd.to_numeric, errors="coerce").fillna(0)
     sales = pd.DataFrame({
         "Branch": sales_raw[sb].astype(str).str.strip().str.upper(),
         "Product_Key": sales_raw[sm].astype(str).str.strip().str.upper(),
@@ -1275,7 +1202,7 @@ def de_load_and_prepare(uploaded, exclude_cols=(), status_col=None, force_months
     # ---- stock ----
     t_brand = de_pick(stock_raw.columns, DE_KEY_BRAND, [tb, tm])
     t_group = de_pick(stock_raw.columns, DE_KEY_GROUP, [tb, tm, t_brand])
-    t_status, status_src = de_find_status(stock_raw, f"Stocks sheet '{tname}'", [tb, tm, t_brand, t_group], status_col)
+    t_status = de_pick(stock_raw.columns, DE_KEY_STATUS, [tb, tm])
     sup_cols = [c for c in stock_raw.columns if "supplier" in de_clean(c)]
     t_qty = de_pick(stock_raw.columns, DE_KEY_QTY, [tb, tm, t_status, *sup_cols])
     stock = pd.DataFrame({
@@ -1285,7 +1212,7 @@ def de_load_and_prepare(uploaded, exclude_cols=(), status_col=None, force_months
         "Brand_s": stock_raw[t_brand].astype(str).str.strip() if t_brand else "",
         "ItemGroup1_s": stock_raw[t_group].astype(str).str.strip() if t_group else "",
         "Supplier_Status": stock_raw[t_status].astype(str).str.strip() if t_status else "",
-        "Current_Stock": de_num(stock_raw[t_qty]).fillna(0) if t_qty else 1,
+        "Current_Stock": pd.to_numeric(stock_raw[t_qty], errors="coerce").fillna(0) if t_qty else 1,
     })
     stock = stock[~stock["Branch"].isin(["", "NAN"]) & ~stock["Product_Key"].isin(["", "NAN"])]
     stock = stock.groupby(["Branch", "Product_Key"], as_index=False).agg(
@@ -1298,29 +1225,9 @@ def de_load_and_prepare(uploaded, exclude_cols=(), status_col=None, force_months
         full[a] = full[a].where(full[a].fillna("").astype(str).str.strip() != "", full[b]).fillna("")
     full = full.drop(columns=["Model No_s", "Brand_s", "ItemGroup1_s"])
     full["Supplier_Status"] = full["Supplier_Status"].fillna("")
-    from_stock_rows = int((full["Supplier_Status"] != "").sum())
-    # look the status up by item code: any branch's row, then the sales sheet, then every other sheet in the workbook
-    pmap = full[full["Supplier_Status"] != ""].groupby("Product_Key")["Supplier_Status"].first().to_dict()
-    sources = [status_src] if status_src else []
-    lookups = [(sales_raw, sm, f"Sales sheet '{sname}'", [sb, sm, s_brand, s_group])]
-    for nm in [n for n in xl.sheet_names if n not in (sname, tname)]:
-        ex = de_read(xl, nm)
-        mc = de_pick(ex.columns, DE_KEY_MODEL, [])
-        if mc:
-            lookups.append((ex, mc, f"Sheet '{nm}'", [mc]))
-    for df_, mc, label, excl in lookups:
-        sc, src = de_find_status(df_, label, excl, status_col)
-        if not sc:
-            continue
-        sources.append(src + " - looked up by item code")
-        keys = df_[mc].astype(str).str.strip().str.upper()
-        vals = df_[sc].astype(str).str.strip()
-        for k, v in zip(keys, vals):
-            if v and v.lower() != "nan" and k not in ("", "NAN"):
-                pmap.setdefault(k, v)
+    pmap = full[full["Supplier_Status"] != ""].groupby("Product_Key")["Supplier_Status"].first()
     blank = full["Supplier_Status"] == ""
     full.loc[blank, "Supplier_Status"] = full.loc[blank, "Product_Key"].map(pmap).fillna("")
-    filled = int((full["Supplier_Status"] != "").sum()) - from_stock_rows
     full["Is_EOL"] = full["Supplier_Status"].map(de_is_eol_text)
     full = full.reset_index(drop=True)
 
@@ -1368,9 +1275,7 @@ def de_load_and_prepare(uploaded, exclude_cols=(), status_col=None, force_months
     enriched["Clean_Monthly_Avg"] = enriched["Clean_Monthly_Avg"].round(2)
     flags_df = pd.concat([full[ids].reset_index(drop=True), pd.DataFrame(flg, columns=months)], axis=1)
 
-    full.attrs.update({"status_source": "; ".join(sources) if sources else "",
-                       "status_rows_filled_by_lookup": filled, "stock_columns": list(stock_raw.columns),
-                       "months": months, "month_diagnostics": month_diag, "sales_sheet": sname, "stock_sheet": tname,
+    full.attrs.update({"months": months, "sales_sheet": sname, "stock_sheet": tname,
                        "enriched": enriched, "flags": flags_df})
     return full, None
 
@@ -1431,128 +1336,6 @@ def de_build_enriched_sales_excel(meta):
 
 
 
-# ------------------------------ ORDER & REPLENISH PLAN --------------------
-def de_plan_replenishment(df, lead_days=14, safety_days=7, review_days=30, max_cover_months=4.0, min_display=1):
-    """From clean monthly demand + current stock, per branch and item:
-         reorder point = demand over (lead + safety) days, at least the display minimum
-         order-up-to   = demand over (lead + safety + review) days
-         excess        = stock above max_cover_months of demand (all stock if there is no demand)
-       Shortages are filled FIRST by transferring excess from other branches, the rest is ordered.
-       EOL items are never ordered; NEW (newly listed) items are never transferred out.
-       Returns (plan, transfers, branch_summary)."""
-    d = df.reset_index(drop=True).copy()
-    avg = d["Monthly_Avg"].to_numpy(float)
-    stock = d["Current_Stock"].to_numpy(float)
-    eol = d["Is_EOL"].to_numpy(bool)
-    is_new = d["Supplier_Status"].astype(str).str.upper().str.startswith("NEW").to_numpy()
-    daily = avg / 30.0
-    mn = np.where(avg > 0, min_display, 0)
-    rop = np.maximum(mn, np.ceil(daily * (lead_days + safety_days)))
-    target = np.maximum(rop, np.ceil(daily * (lead_days + safety_days + review_days)))
-    need = np.where((avg > 0) & (stock <= rop), np.maximum(target - stock, 0), 0.0)
-    keep = np.where(avg > 0, np.maximum(np.ceil(avg * max_cover_months), mn), 0)
-    excess = np.where(need > 0, 0.0, np.maximum(stock - keep, 0))
-    excess[is_new] = 0
-
-    n = len(d)
-    t_in, t_out = np.zeros(n), np.zeros(n)
-    from_txt = [""] * n
-    transfers = []
-    for _, pos in d.groupby("Product_Key").indices.items():
-        donors = [i for i in pos if excess[i] > 0]
-        recips = [i for i in pos if need[i] > 0]
-        if not donors or not recips:
-            continue
-        donors.sort(key=lambda i: -excess[i])
-        recips.sort(key=lambda i: -avg[i])
-        left = {i: excess[i] for i in donors}
-        for r in recips:
-            want, parts = need[r], []
-            for dn in donors:
-                if want <= 0:
-                    break
-                q = min(left[dn], want)
-                if q <= 0:
-                    continue
-                left[dn] -= q; want -= q
-                t_in[r] += q; t_out[dn] += q
-                parts.append(f"{d.at[dn, 'Branch']} x{int(q)}")
-                transfers.append({"Model No": d.at[r, "Model No"], "Brand": d.at[r, "Brand"],
-                                  "From Branch": d.at[dn, "Branch"], "To Branch": d.at[r, "Branch"], "Qty": int(q),
-                                  "Item Status": d.at[r, "Supplier_Status"]})
-            from_txt[r] = "; ".join(parts)
-
-    order = np.where(eol, 0.0, np.maximum(need - t_in, 0))
-    days_cover = np.where(avg > 0, stock / np.where(avg > 0, daily, 1), np.inf)
-    action, prio = [], []
-    for i in range(n):
-        if need[i] > 0:
-            if t_in[i] >= need[i]:
-                a = "TRANSFER IN"
-            elif t_in[i] > 0 and order[i] > 0:
-                a = "TRANSFER IN + ORDER"
-            elif eol[i]:
-                a = "EOL - cannot order (clear remaining stock only)"
-            else:
-                a = "ORDER"
-            p = "1-CRITICAL" if stock[i] <= 0 else ("2-HIGH" if days_cover[i] < lead_days else "3-NORMAL")
-            if eol[i]:
-                p = "4-REVIEW"          # EOL is never a stockout emergency
-        elif t_out[i] > 0:
-            a, p = ("TRANSFER OUT (dead stock)" if avg[i] == 0 else "TRANSFER OUT (excess)"), "3-NORMAL"
-        elif excess[i] > 0:
-            a = "EOL - send to sellable warehouse" if eol[i] else "EXCESS - no branch needs it yet"
-            p = "4-REVIEW"
-        else:
-            a, p = "OK", ""
-        action.append(a); prio.append(p)
-
-    plan = pd.DataFrame({
-        "Branch": d["Branch"], "Brand": d["Brand"], "ItemGroup1": d["ItemGroup1"], "Model No": d["Model No"],
-        "Supplier_Status": d["Supplier_Status"], "Status": d["Status"] if "Status" in d else "",
-        "Clean_Monthly_Avg": np.round(avg, 2), "Current_Stock": stock.astype(int),
-        "Reorder_Point": rop.astype(int), "Target_Stock": target.astype(int), "Shortfall": need.astype(int),
-        "Transfer_In": t_in.astype(int), "Transfer_From": from_txt, "ORDER_QTY": order.astype(int),
-        "Excess_Qty": excess.astype(int), "Transfer_Out": t_out.astype(int),
-        "Action": action, "Priority": prio, "Confidence": d["Confidence"],
-    })
-    plan = plan[plan["Action"] != "OK"].sort_values(["Priority", "Branch", "Clean_Monthly_Avg"],
-                                                      ascending=[True, True, False]).reset_index(drop=True)
-    tr = pd.DataFrame(transfers, columns=["Model No", "Brand", "From Branch", "To Branch", "Qty", "Item Status"])
-    tr = tr.sort_values(["To Branch", "Model No"]).reset_index(drop=True)
-    summ = plan.groupby("Branch").agg(
-        Lines_Needing_Action=("Action", "size"),
-        Critical_Stockouts=("Priority", lambda s: int((s == "1-CRITICAL").sum())),
-        Order_Units=("ORDER_QTY", "sum"), Transfer_In_Units=("Transfer_In", "sum"),
-        Transfer_Out_Units=("Transfer_Out", "sum")).reset_index().sort_values("Order_Units", ascending=False)
-    return plan, tr, summ
-
-
-def de_build_branch_order_book(plan, transfers, summary):
-    """One workbook: Summary + Transfers + one sheet per branch (ready to send to the branch)."""
-    bio = BytesIO()
-    from openpyxl.styles import Font
-    with pd.ExcelWriter(bio, engine="openpyxl") as w:
-        summary.to_excel(w, sheet_name="Summary", index=False)
-        transfers.to_excel(w, sheet_name="Transfers", index=False)
-        used = {"Summary", "Transfers"}
-        for b, g in plan.groupby("Branch"):
-            name = re.sub(r"[\\/*?:\[\]]", "", str(b))[:28] or "Branch"
-            k, base = 2, name
-            while name in used:
-                name = f"{base[:26]}_{k}"; k += 1
-            used.add(name)
-            g.drop(columns=["Branch"]).to_excel(w, sheet_name=name, index=False)
-        for ws in w.book.worksheets:
-            ws.freeze_panes = "A2"
-            for c in ws[1]:
-                c.font = Font(bold=True)
-            for col in ws.columns:
-                ws.column_dimensions[col[0].column_letter].width = 16
-    return bio.getvalue()
-
-
-
 def data_analysis():
     module_header("📊🔍 Data Analysis & Insights", "Visual inventory intelligence across all branches", "analysis_back")
 
@@ -1565,15 +1348,9 @@ def data_analysis():
 
     with st.expander("⚙️ Month columns detected / columns to ignore", expanded=False):
         ignore_txt = st.text_input("Columns to ignore (comma-separated, e.g. Price, Cost)", key="analysis_ignore")
-        status_txt = st.text_input("Supplier Product Status column name (only if it is not found automatically)",
-                                   key="analysis_status_col")
-        force_txt = st.text_input("Force these columns to be treated as months (comma-separated, only if a month is missed)",
-                                  key="analysis_force_months")
-    force_months = [c.strip() for c in force_txt.split(",") if c.strip()] if force_txt else []
     exclude_cols = [c.strip() for c in ignore_txt.split(",") if c.strip()] if ignore_txt else []
 
-    df, error = de_load_and_prepare(uploaded, exclude_cols=exclude_cols, status_col=(status_txt.strip() or None),
-                                    force_months=force_months)
+    df, error = de_load_and_prepare(uploaded, exclude_cols=exclude_cols)
     if error:
         st.error(error)
         return
@@ -1583,20 +1360,10 @@ def data_analysis():
     df = de_compute_status(df)
     df.attrs = {}                              # keep the big audit tables out of every dataframe slice
 
-    with st.expander(f"🗓️ {len(months)} month column(s) detected - click to check", expanded=len(months) <= 2):
-        st.write("Months used (oldest → newest): " + ", ".join(str(m) for m in months))
-        st.dataframe(meta["month_diagnostics"], use_container_width=True, height=250)
-    if len(months) <= 2:
-        st.warning(f"Only {len(months)} month column(s) were detected. Open the box above to see why each column was "
-                   "skipped, then type the missed month headers into 'Force these columns to be treated as months'.")
-
     st.caption(f"Sales sheet **{meta['sales_sheet']}** · Stock sheet **{meta['stock_sheet']}** · "
                f"**{len(months)} months** detected ({months[0]} → {months[-1]}). "
                "Monthly average is availability-adjusted: stockout months excluded, promo / bulk spikes normalised, "
                "EOL / discontinued items never counted as stockouts.")
-    if meta["status_source"]:
-        st.caption(f"Supplier product status taken from: {meta['status_source']} "
-                   f"({meta['status_rows_filled_by_lookup']:,} rows filled by item-code lookup).")
 
     # ---------------- KPI Row ----------------
     in_play = df[~df["Status"].isin(["EOL / Run-down", "No Stock / No Demand"])]
@@ -1625,10 +1392,10 @@ def data_analysis():
     total_branches_all = df["Branch"].nunique()
 
     (tab_overview, tab_bestsellers, tab_dead, tab_branch, tab_aging,
-     tab_status_gaps, tab_replenish, tab_coverage, tab_quality, tab_plan) = st.tabs(
+     tab_status_gaps, tab_replenish, tab_coverage, tab_quality) = st.tabs(
         ["📦 Stock Health Overview", "⭐ Best Sellers & Stockout Risk", "⚫ Dead & Slow Stock",
          "🏬 Branch Performance", "⏳ Stock Aging", "🏷️ Availability Gaps", "🔁 Replenishment Monitor",
-         "📶 Branch Coverage", "🧪 Demand Quality", "🛒 Order & Replenish"]
+         "📶 Branch Coverage", "🧪 Demand Quality"]
     )
 
     # ---- Overview ----
@@ -1784,10 +1551,9 @@ def data_analysis():
 
         if not known_statuses:
             st.info(
-                "No supplier product status could be found on any sheet (looked at the Stocks sheet, the Sales "
-                "sheet and every other sheet, by header and by values). Columns seen on your Stocks sheet: "
-                + ", ".join(str(c) for c in meta["stock_columns"])
-                + ". Type the exact status column name in the '⚙️ Month columns detected' box at the top and it will be used."
+                "No 'Supplier Product Status' column was detected on your Stocks sheet. Add a column with a "
+                "header containing the word 'Status' (e.g. 'Supplier Product Status') listing values like "
+                "Available, REG, New, Repl, Discontinued, etc. to unlock this report."
             )
         else:
             default_selected = [s for s in known_statuses if not df.loc[df["Supplier_Status"] == s, "Is_EOL"].any()]
@@ -2004,67 +1770,495 @@ def data_analysis():
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 
-    # ---- Order & Replenish (new): what to order / move per branch from the clean history ----
-    with tab_plan:
-        st.markdown("#### What to order and replenish, per branch")
-        st.caption(
-            "Built from each item's clean monthly average and current stock. Shortages are filled first by moving "
-            "excess stock from other branches; only the remainder is ordered. EOL / discontinued items are never "
-            "ordered and NEW listings are never moved out."
+# -------------------------------------------------
+# MODULE 5: Aged Stock Transfer
+# -------------------------------------------------
+def aged_stock_transfer():
+    module_header(
+        "🕰️📦 Aged Stock Transfer",
+        "Redeploys aged stock from slow branches to branches with strong, consistent sell-out — regardless of item group",
+        "aged_back"
+    )
+    uploaded = st.file_uploader("Upload Excel file (Sales + Stocks sheets)", type=["xlsx", "xls"], key="aged_upload")
+    if uploaded is None:
+        st.info("Upload your Sales + Stocks Excel file.")
+        return
+    df, error = load_and_prepare(uploaded)
+    if error:
+        st.error(error)
+        return
+    df = compute_status(df)
+
+    st.markdown("### Aging & Priority Settings")
+    col_a, col_b, col_c = st.columns(3)
+    with col_a:
+        months_cover_threshold = st.slider(
+            "Treat stock as 'aged' when Months of Cover ≥", 1.0, 12.0, 3.0, 0.5,
+            help="A branch's stock for a product is considered aged if it would take this many months (or more) to sell through at that branch's own average pace."
         )
-        c1, c2, c3, c4, c5 = st.columns(5)
-        lead = c1.number_input("Supplier lead time (days)", 0, 180, 14, key="plan_lead")
-        safety = c2.number_input("Safety days", 0, 90, 7, key="plan_safety")
-        review = c3.number_input("Order cycle (days)", 1, 120, 30, key="plan_review")
-        maxcov = c4.number_input("Excess above (months of cover)", 1.0, 24.0, 4.0, step=0.5, key="plan_maxcov")
-        mindisp = c5.number_input("Min display qty (selling items)", 0, 5, 1, key="plan_mindisp")
+    with col_b:
+        include_dead_as_aged = st.checkbox("Also treat zero-sales (dead) stock as aged", value=True)
+    with col_c:
+        min_keep = st.number_input("Minimum units a donor branch must keep", 0, 5, 1)
 
-        plan, transfers_df, plan_summary = de_plan_replenishment(df, lead, safety, review, maxcov, mindisp)
+    st.caption(
+        "Receivers are ranked purely by their own average monthly sell-out — a branch with strong sales but "
+        "**zero current stock** is prioritized as a receiver ahead of everyone else, no matter whether the "
+        "item is LDA, SDA or MDA. Multiple zero-stock receivers for the same model are filled in rank order."
+    )
 
-        if len(plan) == 0:
-            st.success("Nothing to order or move with these settings. 🎉")
+    # ---- Identify aged stock (potential donors) ----
+    is_aged = df["Months_Cover"] >= months_cover_threshold
+    if include_dead_as_aged:
+        is_aged = is_aged | (df["Status"] == "Dead Stock")
+    df["Is_Aged"] = is_aged & (df["Current_Stock"] > min_keep)
+
+    transfers = []
+
+    for product, group in df.groupby("Product_Key"):
+        # All genuine zero-stock receivers for this product, ranked by sales strength
+        receivers = (
+            group[
+                (group["Current_Stock"] <= 0) &
+                (group["Monthly_Avg"] > 0)
+            ]
+            .sort_values("Monthly_Avg", ascending=False)
+            .copy()
+        )
+        if receivers.empty:
+            continue
+
+        receiver_branches = set(receivers["Branch"])
+
+        # Donors = aged stock, not already in the receiver list, weakest sales first
+        donors = (
+            group[
+                (group["Is_Aged"]) &
+                (~group["Branch"].isin(receiver_branches))
+            ]
+            .sort_values("Monthly_Avg", ascending=True)
+            .copy()
+        )
+        if donors.empty:
+            continue
+
+        donors["Available"] = (donors["Current_Stock"] - min_keep).clip(lower=0)
+
+        # Walk receivers in priority order; each can pull from any remaining donor stock
+        for _, rec in receivers.iterrows():
+            needed = max(2, int(math.ceil(rec["Monthly_Avg"] * 2)))
+            remaining = needed
+
+            for idx in donors.index:
+                if remaining <= 0:
+                    break
+                can_give = donors.at[idx, "Available"]
+                if can_give <= 0:
+                    continue
+
+                give = min(remaining, can_give)
+                if give > 0:
+                    transfers.append({
+                        "Receiver Branch": rec["Branch"],
+                        "Brand": rec.get("Brand", ""),
+                        "ItemGroup1": rec.get("ItemGroup1", ""),
+                        "Model No": rec.get("Model No", ""),
+                        "Receiver Monthly Avg Sales": round(float(rec["Monthly_Avg"]), 2),
+                        "Receiver Current Stock": int(rec["Current_Stock"]),
+                        "Donor Branch": donors.at[idx, "Branch"],
+                        "Donor Months Cover (aged)": (
+                            round(float(donors.at[idx, "Months_Cover"]), 1)
+                            if donors.at[idx, "Months_Cover"] != 999
+                            else "Never sold"
+                        ),
+                        "Suggested Transfer Qty": int(give),
+                    })
+                    donors.at[idx, "Available"] -= give
+                    remaining -= give
+
+    report = pd.DataFrame(transfers)
+    if report.empty:
+        st.warning("No aged-stock transfers available with current settings. Try lowering the Months of Cover threshold.")
+        return
+
+    # Global ranking still prioritises strongest receivers first
+    report = (
+        report
+        .sort_values(
+            by=["Receiver Monthly Avg Sales", "Suggested Transfer Qty"],
+            ascending=[False, False]
+        )
+        .reset_index(drop=True)
+    )
+    report.insert(0, "Priority Rank", report.index + 1)
+
+    st.success(
+        f"**{len(report)}** aged-stock transfer recommendations • "
+        f"Total units to move: **{report['Suggested Transfer Qty'].sum()}**"
+    )
+
+    top_receivers = (
+        report
+        .groupby("Receiver Branch", as_index=False)["Suggested Transfer Qty"]
+        .sum()
+        .sort_values("Suggested Transfer Qty", ascending=False)
+    )
+    fig = px.bar(
+        top_receivers,
+        x="Receiver Branch",
+        y="Suggested Transfer Qty",
+        title="Aged Stock Units Recommended to Receive, by Branch",
+        color_discrete_sequence=["#d97706"],
+    )
+    fig.update_layout(margin=dict(t=60, b=10, l=10, r=10), xaxis_tickangle=-35)
+    st.plotly_chart(fig, use_container_width=True)
+
+    st.dataframe(report, use_container_width=True, height=480)
+
+    st.download_button(
+        "⬇️ Download Aged Stock Transfer Report",
+        data=to_excel_bytes({"Aged_Stock_Transfers": report}),
+        file_name=f"Aged_Stock_Transfers_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True,
+    )
+# -------------------------------------------------
+# MODULE 6: Per Branch Transfer
+# -------------------------------------------------
+def _normalise_transfer_columns(frame, quantity_candidates=None):
+    """Normalise product/branch/quantity columns, supporting the supplied workbook layouts."""
+    frame = frame.copy()
+    frame.columns = [str(c).strip() for c in frame.columns]
+    lookup = {str(c).strip().lower(): c for c in frame.columns}
+
+    def find_col(candidates, contains=None):
+        for candidate in candidates:
+            if candidate in lookup:
+                return lookup[candidate]
+        if contains:
+            for low, original in lookup.items():
+                if contains in low:
+                    return original
+        return None
+
+    brand = find_col(["brand"], "brand")
+    group = find_col(["item group", "itemgroup1", "item group1", "item_group"], "group")
+    model = find_col(["model", "model no", "model number", "sku"], "model")
+    # Sales sheet uses "3months sales Qty"; prefer it over monthly average or month columns.
+    qty = None
+    if quantity_candidates:
+        qty = find_col(quantity_candidates)
+    if qty is None:
+        qty = find_col(["quantity", "qty", "units", "total sold", "sales quantity"], "quantity")
+    branch = find_col(["branch", "branch name", "showroom", "outlet", "store"], "branch")
+
+    if not brand or not model or not qty:
+        raise ValueError(
+            "Each data sheet must contain Brand, Model (or Model No), and Quantity columns. "
+            f"Columns found: {list(frame.columns)}"
+        )
+
+    rename = {brand: "Brand", model: "Model No", qty: "Quantity"}
+    if group:
+        rename[group] = "ItemGroup1"
+    if branch:
+        rename[branch] = "Branch"
+    frame = frame.rename(columns=rename)
+
+    if "ItemGroup1" not in frame.columns:
+        frame["ItemGroup1"] = ""
+
+    for col in ["Brand", "ItemGroup1", "Model No"]:
+        frame[col] = frame[col].fillna("").astype(str).str.strip()
+    frame["Quantity"] = pd.to_numeric(frame["Quantity"].replace(r"^\s*-\s*$", 0, regex=True), errors="coerce").fillna(0).clip(lower=0)
+    frame["Product_Key"] = (
+        frame["Brand"].str.upper() + " | " +
+        frame["ItemGroup1"].str.upper() + " | " +
+        frame["Model No"].str.upper()
+    )
+    if "Branch" in frame.columns:
+        frame["Branch"] = frame["Branch"].fillna("").astype(str).str.strip()
+    return frame
+
+
+def _pick_sheet(excel_file, keywords, fallback_index):
+    for sheet in excel_file.sheet_names:
+        if any(word in sheet.lower() for word in keywords):
+            return sheet
+    return excel_file.sheet_names[fallback_index] if len(excel_file.sheet_names) > fallback_index else None
+
+
+def per_branch_transfer():
+    module_header(
+        "🔄 Per Branch Transfer",
+        "Identify non-selling donor stock and allocate it to zero-stock branches with the strongest 3-month sales",
+        "branch_transfer_back"
+    )
+
+    uploaded = st.file_uploader(
+        "Upload one Excel workbook with 3 sheets: Donor, Stocks, and Sales",
+        type=["xlsx", "xls"],
+        key="branch_transfer_upload"
+    )
+    if uploaded is None:
+        st.info(
+            "Expected data: a Donor sheet with donor branch + quantities, a Stocks sheet showing "
+            "current stock by branch, and a Sales sheet with branch-level units sold over the last 3 months."
+        )
+        st.caption(
+            "Donor sheet: Brand, ItemGroup1, Model No, Quantity (select the donor branch in the app). "
+            "Sales sheet: Branch, ItemGroup1, ModelNo, Brand, and 3months sales Qty. "
+            "Stocks sheet: Brand, ItemGroup1, Model No, plus one quantity column per branch. Dashes and blanks count as zero."
+        )
+        return
+
+    try:
+        xlsx = pd.ExcelFile(uploaded)
+        if len(xlsx.sheet_names) < 3:
+            st.error("The workbook must contain at least 3 sheets: Donor, Stocks, and Sales.")
+            return
+
+        donor_sheet = _pick_sheet(xlsx, ["donor"], 0)
+        stock_sheet = _pick_sheet(xlsx, ["stock", "inventory"], 1)
+        sales_sheet = _pick_sheet(xlsx, ["sales", "sale"], 2)
+
+        donor_raw = pd.read_excel(xlsx, sheet_name=donor_sheet)
+        stock_raw = pd.read_excel(xlsx, sheet_name=stock_sheet)
+        sales_raw = pd.read_excel(xlsx, sheet_name=sales_sheet)
+
+        donor_df = _normalise_transfer_columns(donor_raw)
+        sales_df = _normalise_transfer_columns(
+            sales_raw,
+            quantity_candidates=[
+                "3months sales qty", "3 months sales qty", "3-month sales qty",
+                "3 month sales qty", "3months sales quantity", "three months sales qty",
+                "quantity", "qty"
+            ]
+        )
+
+        # Stocks can be either long format (Branch, Quantity) or wide format (branch names as columns).
+        stock_cols_low = {str(c).strip().lower(): c for c in stock_raw.columns}
+        branch_col = next(
+            (stock_cols_low[k] for k in stock_cols_low
+             if k in ["branch", "branch name", "showroom", "outlet", "store"]),
+            None
+        )
+        if branch_col:
+            stock_df = _normalise_transfer_columns(stock_raw)
+            if "Branch" not in stock_df.columns:
+                raise ValueError("The Stocks sheet in long format needs a Branch column.")
+            stock_long = stock_df[["Brand", "ItemGroup1", "Model No", "Product_Key", "Branch", "Quantity"]].copy()
         else:
-            sel = st.selectbox("Branch", ["All branches"] + sorted(plan["Branch"].unique()), key="plan_branch")
-            view = plan if sel == "All branches" else plan[plan["Branch"] == sel]
-            tview = transfers_df if sel == "All branches" else transfers_df[
-                (transfers_df["From Branch"] == sel) | (transfers_df["To Branch"] == sel)]
+            # Wide format: Brand / Item group / Model plus one stock column per branch.
+            id_brand = next((stock_cols_low[k] for k in stock_cols_low if "brand" in k), None)
+            id_group = next((stock_cols_low[k] for k in stock_cols_low if "group" in k), None)
+            id_model = next((stock_cols_low[k] for k in stock_cols_low if "model" in k or k == "sku"), None)
+            if not id_brand or not id_model:
+                raise ValueError("Stocks sheet needs Brand, Model, and branch stock columns.")
+            id_cols = [id_brand, id_model] + ([id_group] if id_group else [])
+            branch_columns = [
+                c for c in stock_raw.columns
+                if c not in id_cols
+                and "total" not in str(c).lower()
+                and not str(c).lower().startswith("unnamed")
+            ]
+            if not branch_columns:
+                raise ValueError("No branch stock columns were detected in the Stocks sheet.")
+            wide = stock_raw.rename(columns={id_brand: "Brand", id_model: "Model No"})
+            if id_group:
+                wide = wide.rename(columns={id_group: "ItemGroup1"})
+            else:
+                wide["ItemGroup1"] = ""
+            for col in ["Brand", "ItemGroup1", "Model No"]:
+                wide[col] = wide[col].fillna("").astype(str).str.strip()
+            wide["Product_Key"] = (
+                wide["Brand"].str.upper() + " | " +
+                wide["ItemGroup1"].str.upper() + " | " +
+                wide["Model No"].str.upper()
+            )
+            stock_long = wide.melt(
+                id_vars=["Brand", "ItemGroup1", "Model No", "Product_Key"],
+                value_vars=branch_columns, var_name="Branch", value_name="Quantity"
+            )
+            stock_long["Quantity"] = pd.to_numeric(stock_long["Quantity"].replace(r"^\s*-\s*$", 0, regex=True), errors="coerce").fillna(0).clip(lower=0)
+            stock_long["Branch"] = stock_long["Branch"].astype(str).str.strip()
 
-            m1, m2, m3, m4 = st.columns(4)
-            m1.metric("Lines needing action", f"{len(view):,}")
-            m2.metric("Units to ORDER", f"{int(view['ORDER_QTY'].sum()):,}")
-            m3.metric("Units to TRANSFER", f"{int(view['Transfer_In'].sum()):,}")
-            m4.metric("Critical (out of stock, selling)", f"{int((view['Priority'] == '1-CRITICAL').sum()):,}")
+        if "Branch" not in donor_df.columns:
+            donor_branches = sorted(stock_long["Branch"].dropna().astype(str).unique().tolist())
+            if not donor_branches:
+                st.error("Could not identify branches. Add a Branch column to the Donor sheet.")
+                return
+            selected_donor = st.selectbox("Select the donor branch for the uploaded donor list", donor_branches)
+            donor_df["Branch"] = selected_donor
 
-            chart_df = plan_summary.head(25).melt(id_vars="Branch", value_vars=["Order_Units", "Transfer_In_Units"],
-                                                  var_name="Type", value_name="Units")
-            fig_plan = px.bar(chart_df, x="Branch", y="Units", color="Type", barmode="group",
-                              title="Units to order vs transfer in, by branch (top 25 by order units)")
-            fig_plan.update_layout(margin=dict(t=60, b=10, l=10, r=10), xaxis_tickangle=-35)
-            st.plotly_chart(fig_plan, use_container_width=True)
+        if "Branch" not in sales_df.columns:
+            st.error("The Sales sheet must include a Branch column so sales can be compared branch by branch.")
+            return
 
-            st.markdown("##### 🛒 Order list")
-            st.dataframe(view[view["ORDER_QTY"] > 0][["Branch", "Brand", "ItemGroup1", "Model No", "Supplier_Status",
-                                                      "Clean_Monthly_Avg", "Current_Stock", "Reorder_Point",
-                                                      "Target_Stock", "Transfer_In", "ORDER_QTY", "Priority"]],
-                         use_container_width=True, height=300)
-            st.markdown("##### 🔁 Transfers (move excess stock to branches that need it)")
-            st.dataframe(tview, use_container_width=True, height=250)
-            st.markdown("##### 📋 Full plan")
-            st.dataframe(view, use_container_width=True, height=350)
-            st.markdown("##### 🏬 Branch summary")
-            st.dataframe(plan_summary, use_container_width=True, height=250)
+        # Combine duplicate product/branch rows safely.
+        donor_df = donor_df.groupby(
+            ["Product_Key", "Brand", "ItemGroup1", "Model No", "Branch"], as_index=False
+        )["Quantity"].sum()
+        stock_long = stock_long.groupby(
+            ["Product_Key", "Brand", "ItemGroup1", "Model No", "Branch"], as_index=False
+        )["Quantity"].sum()
+        sales_df = sales_df.groupby(
+            ["Product_Key", "Brand", "ItemGroup1", "Model No", "Branch"], as_index=False
+        )["Quantity"].sum()
 
-            d1, d2 = st.columns(2)
-            d1.download_button(
-                "⬇️ Download Order & Replenish Plan (all branches)",
-                data=to_excel_bytes({"Orders": plan[plan["ORDER_QTY"] > 0], "Transfers": transfers_df,
-                                     "Full_Plan": plan, "Branch_Summary": plan_summary}),
-                file_name=f"Order_Replenish_Plan_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+        # If there is no explicit donor branch in the donor sheet, the selected branch is applied above.
+        donor_branches = sorted(donor_df["Branch"].dropna().astype(str).unique().tolist())
+        if len(donor_branches) > 1:
+            donor_branch = st.selectbox("Donor branch to analyse", donor_branches, key="donor_branch_select")
+            donor_df = donor_df[donor_df["Branch"] == donor_branch].copy()
+        else:
+            donor_branch = donor_branches[0]
+
+        sales_lookup = sales_df.set_index(["Product_Key", "Branch"])["Quantity"].to_dict()
+        stock_lookup = stock_long.set_index(["Product_Key", "Branch"])["Quantity"].to_dict()
+        product_info = donor_df.drop_duplicates("Product_Key").set_index("Product_Key")[
+            ["Brand", "ItemGroup1", "Model No"]
+        ].to_dict("index")
+
+        # Donor candidates: stock exists at donor branch but sales over the last 3 months are zero.
+        donor_candidates = []
+        for _, row in donor_df.iterrows():
+            key = row["Product_Key"]
+            branch = str(row["Branch"])
+            donor_qty = float(row["Quantity"])
+            donor_sales = float(sales_lookup.get((key, branch), 0))
+            current_donor_stock = float(stock_lookup.get((key, branch), donor_qty))
+            available = min(donor_qty, current_donor_stock)
+            if donor_sales <= 0 and available > 0:
+                donor_candidates.append({
+                    "Product_Key": key, "Brand": row["Brand"], "ItemGroup1": row["ItemGroup1"],
+                    "Model No": row["Model No"], "Donor Branch": branch,
+                    "Donor Current Stock": int(current_donor_stock),
+                    "Donor Qty Listed": int(donor_qty), "Donor Sales (3M)": donor_sales,
+                    "Available to Transfer": int(available)
+                })
+
+        if not donor_candidates:
+            st.warning(
+                "No donor candidates found. A donor candidate must have positive quantity in the Donor sheet "
+                "and zero sales in the Sales sheet for that donor branch."
+            )
+            return
+
+        candidates_df = pd.DataFrame(donor_candidates)
+        transfers = []
+        # Each available donor unit is assigned to a distinct zero-stock receiver, ranked by sales.
+        for _, donor in candidates_df.iterrows():
+            key = donor["Product_Key"]
+            receiver_sales = sales_df[
+                (sales_df["Product_Key"] == key) &
+                (sales_df["Quantity"] > 1) &
+                (sales_df["Branch"] != donor["Donor Branch"])
+            ].copy()
+            if receiver_sales.empty:
+                continue
+
+            receiver_sales["Current Stock"] = receiver_sales["Branch"].map(
+                lambda b: stock_lookup.get((key, str(b)), 0)
+            )
+            receivers = receiver_sales[receiver_sales["Current Stock"] <= 0].sort_values(
+                "Quantity", ascending=False
+            )
+            if receivers.empty:
+                continue
+
+            units_available = int(donor["Available to Transfer"])
+            # Avoid sending multiple pieces to the same receiver for this SKU from this donor.
+            for _, receiver in receivers.head(units_available).iterrows():
+                transfers.append({
+                    "Priority Rank": 0,
+                    "Brand": donor["Brand"],
+                    "ItemGroup1": donor["ItemGroup1"],
+                    "Model No": donor["Model No"],
+                    "Donor Branch": donor["Donor Branch"],
+                    "Donor Current Stock": donor["Donor Current Stock"],
+                    "Donor Sales (3M)": int(donor["Donor Sales (3M)"]),
+                    "Receiver Branch": receiver["Branch"],
+                    "Receiver Current Stock": int(receiver["Current Stock"]),
+                    "Receiver Sales (3M)": int(receiver["Quantity"]),
+                    "Suggested Transfer Qty": 1
+                })
+
+        report = pd.DataFrame(transfers)
+        if report.empty:
+            st.warning(
+                "No transfer matches found. The module requires a non-selling donor SKU and at least one other "
+                "branch with zero stock and more than 1 unit sold over the last 3 months."
+            )
+            st.dataframe(candidates_df.drop(columns=["Product_Key"]), use_container_width=True)
+            st.download_button(
+                "⬇️ Download Donor Non-Sellers",
+                data=to_excel_bytes({"Donor_Non_Sellers": candidates_df.drop(columns=["Product_Key"])}),
+                file_name=f"Donor_Non_Sellers_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
-            d2.download_button(
-                "⬇️ Download One Sheet Per Branch",
-                data=de_build_branch_order_book(plan, transfers_df, plan_summary),
-                file_name=f"Branch_Order_Sheets_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
+            return
+
+        report = report.sort_values(
+            ["Receiver Sales (3M)", "Brand", "ItemGroup1", "Model No"],
+            ascending=[False, True, True, True]
+        ).reset_index(drop=True)
+        report["Priority Rank"] = report.index + 1
+        cols = [
+            "Priority Rank", "Brand", "ItemGroup1", "Model No", "Donor Branch",
+            "Donor Current Stock", "Donor Sales (3M)", "Receiver Branch",
+            "Receiver Current Stock", "Receiver Sales (3M)", "Suggested Transfer Qty"
+        ]
+        report = report[cols]
+
+        k1, k2, k3 = st.columns(3)
+        k1.metric("Donor Non-Seller SKUs", f"{candidates_df['Product_Key'].nunique():,}")
+        k2.metric("Recommended Transfers", f"{len(report):,}")
+        k3.metric("Total Units to Transfer", f"{int(report['Suggested Transfer Qty'].sum()):,}")
+
+        st.markdown("#### Transfer Recommendations")
+        st.caption(
+            "Priority is based on the receiving branch's 3-month sales for that exact SKU. "
+            "Only zero-stock receivers with sales greater than one unit qualify. Each receiver gets one unit "
+            "per donor SKU; additional donor units are offered to the next-best-selling eligible receiver."
+        )
+        st.dataframe(report, use_container_width=True, height=480)
+        st.markdown("#### Donor Non-Sellers")
+        st.dataframe(candidates_df.drop(columns=["Product_Key"]), use_container_width=True, height=300)
+
+        st.download_button(
+            "⬇️ Download Per Branch Transfer Report",
+            data=to_excel_bytes({
+                "Transfer_Recommendations": report,
+                "Donor_Non_Sellers": candidates_df.drop(columns=["Product_Key"])
+            }),
+            file_name=f"Per_Branch_Transfer_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True
+        )
+
+
+    except Exception as exc:
+        st.error(f"Could not process the workbook: {exc}")
+
+# -------------------------------------------------
+# Router
+# -------------------------------------------------
+if not st.session_state.authenticated:
+    login_page()
+else:
+    if st.session_state.module is None:
+        home_page()
+    elif st.session_state.module == "transfer":
+        transfer_hub()
+    elif st.session_state.module == "health":
+        stock_health()
+    elif st.session_state.module == "lpo":
+        smart_lpo()
+    elif st.session_state.module == "analysis":
+        data_analysis()
+    elif st.session_state.module == "aged":
+        aged_stock_transfer()
+    elif st.session_state.module == "branch_transfer":
+        per_branch_transfer()
+
