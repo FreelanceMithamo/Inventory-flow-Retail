@@ -316,11 +316,16 @@ def load_and_prepare_v2(
     M = sales_raw[months].apply(pd.to_numeric, errors="coerce").fillna(0)
     sales = pd.DataFrame({
         "Branch": sales_raw[sb].astype(str).str.strip().str.upper(),
-        "Product_Key": sales_raw[sm].astype(str).str.strip().str.upper(),
         "Model No": sales_raw[sm].astype(str).str.strip(),
         "Brand": sales_raw[s_brand].astype(str).str.strip() if s_brand else "",
         "ItemGroup1": sales_raw[s_group].astype(str).str.strip() if s_group else "",
     })
+    sales["Product_Key"] = (
+        sales["Model No"]
+        .str.upper()
+        .str.replace(r"\s+", "", regex=True)
+        .str.replace(r"(?<=\d)O|O(?=\d)", "0", regex=True)
+    )
     sales = pd.concat([sales, M], axis=1)
     sales = sales[~sales["Branch"].isin(["", "NAN"]) & ~sales["Product_Key"].isin(["", "NAN"])]
     agg = {"Model No": "first", "Brand": _first, "ItemGroup1": _first, **{m: "sum" for m in months}}
@@ -385,7 +390,6 @@ def load_and_prepare_v2(
         # ----- LONG FORMAT -----
         stock = pd.DataFrame({
             "Branch": stock_raw[tb].astype(str).str.strip().str.upper(),
-            "Product_Key": stock_raw[tm].astype(str).str.strip().str.upper(),
             "Model No_s": stock_raw[tm].astype(str).str.strip(),
             "Brand_s": stock_raw[t_brand].astype(str).str.strip() if t_brand else "",
             "ItemGroup1_s": stock_raw[t_group].astype(str).str.strip() if t_group else "",
@@ -394,8 +398,17 @@ def load_and_prepare_v2(
             ),
             "Current_Stock": pd.to_numeric(stock_raw[t_qty], errors="coerce").fillna(0),
         })
+        stock["Product_Key"] = (
+            stock["Model No_s"]
+            .str.upper()
+            .str.replace(r"\s+", "", regex=True)
+            .str.replace(r"(?<=\d)O|O(?=\d)", "0", regex=True)
+        )
     else:
         # ----- WIDE FORMAT (branch names as columns) -----
+        # Match the original app logic: put warehouse/display/status into id_vars
+        # so they are NOT treated as branch stock columns, but do not drop
+        # other columns that merely contain those words.
         id_vars = [tm]
         if t_brand:
             id_vars.append(t_brand)
@@ -404,14 +417,21 @@ def load_and_prepare_v2(
         if t_status and t_status in stock_raw.columns:
             id_vars.append(t_status)
 
+        # Explicit product-level attributes (not branches)
+        for c in stock_raw.columns:
+            cl = _clean(c)
+            if c in id_vars:
+                continue
+            if any(w in cl for w in ("warehouse type", "warehousetype", "display type",
+                                      "sellable display", "non-sellable", "non sellable",
+                                      "supplier product status", "product status", "item status")):
+                id_vars.append(c)
+
         branch_cols = [
             c for c in stock_raw.columns
             if c not in id_vars
             and "total" not in str(c).lower()
             and not str(c).lower().startswith("unnamed")
-            and "status" not in _clean(c)
-            and "warehouse" not in _clean(c)
-            and "display" not in _clean(c)
         ]
         if not branch_cols:
             return None, (
@@ -438,7 +458,13 @@ def load_and_prepare_v2(
         for col in ["Model No_s", "Brand_s", "ItemGroup1_s", "Supplier_Status"]:
             wide[col] = wide[col].fillna("").astype(str).str.strip()
 
-        wide["Product_Key"] = wide["Model No_s"].str.upper()
+        # Normalise model key: strip, upper, collapse spaces, treat letter-O next to digits as 0
+        wide["Product_Key"] = (
+            wide["Model No_s"]
+            .str.upper()
+            .str.replace(r"\s+", "", regex=True)
+            .str.replace(r"(?<=\d)O|O(?=\d)", "0", regex=True)
+        )
 
         stock = wide.melt(
             id_vars=["Product_Key", "Model No_s", "Brand_s", "ItemGroup1_s", "Supplier_Status"],
@@ -468,8 +494,15 @@ def load_and_prepare_v2(
     })
 
     # Normalise Product_Key on sales side the same way (model only) so wide/long both match
-    # (Brand + Group can differ slightly between sheets)
-    sales["Product_Key"] = sales["Model No"].astype(str).str.strip().str.upper()
+    # (Brand + Group can differ slightly between sheets). Also fix letter-O vs zero.
+    sales["Product_Key"] = (
+        sales["Model No"]
+        .astype(str)
+        .str.strip()
+        .str.upper()
+        .str.replace(r"\s+", "", regex=True)
+        .str.replace(r"(?<=\d)O|O(?=\d)", "0", regex=True)
+    )
 
     full = sales.merge(stock, on=["Branch", "Product_Key"], how="outer")
     full[months] = full[months].fillna(0)
@@ -518,7 +551,8 @@ def load_and_prepare_v2(
     full["Promo_Months_Normalised"] = _cnt("PR")
     full["Bulk_Months_Capped"] = _cnt("BK")
     full["Raw_Monthly_Avg"] = raw
-    full["Monthly_Avg"] = avg
+    # Round UP to whole units — appliances cannot be sold as fractions
+    full["Monthly_Avg"] = np.where(avg > 0, np.ceil(avg), 0.0)
     full["Confidence"] = np.where(used >= 6, "High", np.where(used >= 3, "Medium", "Low"))
 
     notes = []
@@ -548,7 +582,8 @@ def load_and_prepare_v2(
         ]].rename(columns={"Monthly_Avg": "Clean_Monthly_Avg"}),
     ], axis=1)
     enriched["Raw_Monthly_Avg"] = enriched["Raw_Monthly_Avg"].round(2)
-    enriched["Clean_Monthly_Avg"] = enriched["Clean_Monthly_Avg"].round(2)
+    # Clean avg is already ceiled to whole units in Monthly_Avg
+    enriched["Clean_Monthly_Avg"] = enriched["Clean_Monthly_Avg"].round(0).astype(int)
     flags_df = pd.concat([full[ids].reset_index(drop=True), pd.DataFrame(flg, columns=months)], axis=1)
 
     full.attrs.update({
@@ -758,7 +793,7 @@ def plan_replenishment(
         return "5-OK"
 
     d["Priority"] = d.apply(_prio, axis=1)
-    d["Clean_Monthly_Avg"] = d["Monthly_Avg"].round(2)
+    d["Clean_Monthly_Avg"] = d["Monthly_Avg"].round(0).astype(int)
 
     plan_cols = [
         "Branch", "Brand", "ItemGroup1", "Model No", "Supplier_Status",
