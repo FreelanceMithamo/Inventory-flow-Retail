@@ -1133,7 +1133,7 @@ def data_analysis():
             Total_Stock=("Current_Stock", "sum"),
             Branches_Stocked=("Current_Stock", lambda s: int((s > 0).sum())),
         )
-        product_summary["Clean_Monthly_Avg"] = product_summary["Clean_Monthly_Avg"].round(1)
+        product_summary["Clean_Monthly_Avg"] = product_summary["Clean_Monthly_Avg"].round(0).astype(int)
         product_summary["Branches_at_Stockout"] = (
             df[df["Status"] == "Stockout"]
             .groupby("Product_Key")["Branch"]
@@ -1257,7 +1257,7 @@ def data_analysis():
             )
             .sort_values("Total_Sold", ascending=False)
         )
-        branch_summary["Clean_Monthly_Avg"] = branch_summary["Clean_Monthly_Avg"].round(1)
+        branch_summary["Clean_Monthly_Avg"] = branch_summary["Clean_Monthly_Avg"].round(0).astype(int)
 
         fig_branch_sales = px.bar(
             branch_summary,
@@ -1340,7 +1340,7 @@ def data_analysis():
                     Branches_With_Stock=("Current_Stock", lambda s: int((s > 0).sum())),
                     Branches_Total=("Branch", "nunique"),
                 )
-                prod["Clean_Monthly_Avg"] = prod["Clean_Monthly_Avg"].round(1)
+                prod["Clean_Monthly_Avg"] = prod["Clean_Monthly_Avg"].round(0).astype(int)
                 prod["Branches_Without_Stock"] = prod["Branches_Total"] - prod["Branches_With_Stock"]
 
                 missing_map = (
@@ -1416,7 +1416,7 @@ def data_analysis():
         candidates = candidates.merge(
             stock_by_product.rename("Branches_With_Stock_Elsewhere"), on="Product_Key", how="left"
         )
-        candidates["Monthly_Avg"] = candidates["Monthly_Avg"].round(1)
+        candidates["Monthly_Avg"] = candidates["Monthly_Avg"].round(0).astype(int)
 
         if len(candidates) == 0:
             st.success("No un-replenished, sold-out branch-SKUs detected. 🎉")
@@ -1470,11 +1470,22 @@ def data_analysis():
         )
 
         coverage = df.groupby(
-            ["Product_Key", "Brand", "ItemGroup1", "Model No", "Supplier_Status"], as_index=False
+            ["Product_Key", "Brand", "ItemGroup1", "Model No", "Supplier_Status"],
+            as_index=False,
         ).agg(
             Branches_With_Stock=("Current_Stock", lambda s: int((s > 0).sum())),
+            Total_Units_In_Stock=("Current_Stock", "sum"),
             Total_Sold=("Total_Sold", "sum"),
         )
+        holding = (
+            df[df["Current_Stock"] > 0]
+            .groupby("Product_Key")["Branch"]
+            .apply(lambda s: ", ".join(sorted(set(s.astype(str)))))
+            .rename("Branches_Holding_Stock")
+        )
+        coverage = coverage.merge(holding, on="Product_Key", how="left")
+        coverage["Branches_Holding_Stock"] = coverage["Branches_Holding_Stock"].fillna("")
+        coverage["Total_Units_In_Stock"] = coverage["Total_Units_In_Stock"].astype(int)
         coverage["Total_Branches"] = total_branches_all
         low_coverage = coverage[coverage["Branches_With_Stock"] < threshold].sort_values(
             "Branches_With_Stock", ascending=True
@@ -1484,6 +1495,12 @@ def data_analysis():
         m1.metric("Total SKUs", f"{coverage['Product_Key'].nunique():,}")
         m2.metric(f"SKUs Stocked in < {threshold} Branches", f"{len(low_coverage):,}")
         m3.metric("Total Branches in File", f"{total_branches_all}")
+
+        st.caption(
+            "**Branches_With_Stock** = how many branches currently hold at least 1 unit. "
+            "**Total_Units_In_Stock** = sum of all units across those branches. "
+            "If a model looks short, check **Branches_Holding_Stock** against your original sheet."
+        )
 
         if len(low_coverage) == 0:
             st.success(f"Every SKU is stocked in at least {threshold} branches. 🎉")
@@ -1507,8 +1524,10 @@ def data_analysis():
                         "Model No",
                         "Supplier_Status",
                         "Branches_With_Stock",
+                        "Total_Units_In_Stock",
                         "Total_Branches",
                         "Total_Sold",
+                        "Branches_Holding_Stock",
                     ]
                 ],
                 use_container_width=True,
